@@ -279,6 +279,124 @@ public class SparkChainTableITCase {
     }
 
     @Test
+    public void test(@TempDir java.nio.file.Path tempDir) throws IOException {
+        Path warehousePath = new Path("file:" + tempDir.toString());
+        SparkSession.Builder builder =
+                SparkSession.builder()
+                        .config("spark.sql.warehouse.dir", warehousePath.toString())
+                        // with hive metastore
+                        .config("spark.sql.catalogImplementation", "hive")
+                        .config("hive.metastore.uris", "thrift://localhost:" + PORT)
+                        .config("spark.sql.catalog.spark_catalog", SparkCatalog.class.getName())
+                        .config("spark.sql.catalog.spark_catalog.metastore", "hive")
+                        .config(
+                                "spark.sql.catalog.spark_catalog.hive.metastore.uris",
+                                "thrift://localhost:" + PORT)
+                        .config("spark.sql.catalog.spark_catalog.format-table.enabled", "true")
+                        .config(
+                                "spark.sql.catalog.spark_catalog.warehouse",
+                                warehousePath.toString())
+                        .config(
+                                "spark.sql.extensions",
+                                "org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions")
+                        .master("local[2]");
+        SparkSession spark = builder.getOrCreate();
+        spark.sql("CREATE DATABASE IF NOT EXISTS my_db1");
+        spark.sql("USE spark_catalog.my_db1");
+
+        /** Create table */
+        spark.sql(
+                "CREATE TABLE IF NOT EXISTS \n"
+                        + "  `my_db1`.`chain_test` (\n"
+                        + "    `k` INT COMMENT 't2',\n"
+                        + "    `v` STRING COMMENT 't3'\n"
+                        + "  ) PARTITIONED BY (`dt` STRING COMMENT 'dt') ROW FORMAT SERDE 'org.apache.paimon.hive.PaimonSerDe'\n"
+                        + "WITH\n"
+                        + "  SERDEPROPERTIES ('serialization.format' = '1') STORED AS INPUTFORMAT 'org.apache.paimon.hive.mapred.PaimonInputFormat' OUTPUTFORMAT 'org.apache.paimon.hive.mapred.PaimonOutputFormat' TBLPROPERTIES (\n"
+                        + "    'bucket-key' = 'k',\n"
+                        + "    'primary-key' = 'dt,k',\n"
+                        + "    'partition.timestamp-pattern' = '$dt',\n"
+                        + "    'partition.timestamp-formatter' = 'yyyyMMdd',\n"
+                        + "    'chain-table.enabled' = 'true',\n"
+                        + "    'bucket' = '2',\n"
+                        + "    'merge-engine' = 'deduplicate' \n"
+                        + "  )");
+
+        /** Create branch */
+        spark.sql("CALL sys.create_branch('my_db1.chain_test', 'snapshot');");
+        spark.sql("CALL sys.create_branch('my_db1.chain_test', 'delta')");
+
+        /** Set branch */
+        spark.sql(
+                "ALTER TABLE my_db1.chain_test SET tblproperties ("
+                        + "'scan.fallback-snapshot-branch' = 'snapshot', "
+                        + "'scan.fallback-delta-branch' = 'delta')");
+        spark.sql(
+                "ALTER TABLE `my_db1`.`chain_test$branch_snapshot` SET tblproperties ("
+                        + "'scan.fallback-snapshot-branch' = 'snapshot',"
+                        + "'scan.fallback-delta-branch' = 'delta')");
+        spark.sql(
+                "ALTER TABLE `my_db1`.`chain_test$branch_delta` SET tblproperties ("
+                        + "'scan.fallback-snapshot-branch' = 'snapshot',"
+                        + "'scan.fallback-delta-branch' = 'delta')");
+        spark.close();
+        spark = builder.getOrCreate();
+
+        spark.sql("set spark.paimon.branch=delta;");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250101') values (1, 'a');");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250102') values (1, 'b');");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250103') values (1, 'c');");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250104') values (1, 'd');");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250105') values (1, 'e');");
+
+        /** Write snapshot branch */
+        spark.sql("set spark.paimon.branch=snapshot;");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250102') values (1, 'snapshot-b');");
+        spark.sql(
+                "insert overwrite table  `my_db1`.`chain_test` partition (dt = '20250105') values (1, 'snapshot-e');");
+
+        spark.close();
+        spark = builder.getOrCreate();
+
+        assertThat(
+                spark.sql("SELECT * FROM `my_db1`.`chain_test` where dt = '20250101'")
+                        .collectAsList().stream()
+                        .map(Row::toString)
+                        .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,a,20250101]");
+        assertThat(
+                spark.sql("SELECT * FROM `my_db1`.`chain_test` where dt = '20250102'")
+                        .collectAsList().stream()
+                        .map(Row::toString)
+                        .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,snapshot-b,20250102]");
+        assertThat(
+                spark.sql("SELECT * FROM `my_db1`.`chain_test` where dt = '20250103'")
+                        .collectAsList().stream()
+                        .map(Row::toString)
+                        .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,c,20250103]");
+        assertThat(
+                spark.sql("SELECT * FROM `my_db1`.`chain_test` where dt = '20250104'")
+                        .collectAsList().stream()
+                        .map(Row::toString)
+                        .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,d,20250104]");
+        assertThat(
+                spark.sql("SELECT * FROM `my_db1`.`chain_test` where dt = '20250105'")
+                        .collectAsList().stream()
+                        .map(Row::toString)
+                        .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,snapshot-e,20250105]");
+    }
+
+    @Test
     public void testHourlyChainTable(@TempDir java.nio.file.Path tempDir) throws IOException {
         Path warehousePath = new Path("file:" + tempDir.toString());
         SparkSession.Builder builder =
