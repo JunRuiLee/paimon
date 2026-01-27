@@ -61,21 +61,38 @@ public class BranchSqlITCase extends CatalogITCaseBase {
     }
 
     @Test
-    public void testArrayDefaultValue() throws Exception {
-        sql("CREATE TABLE T_ARRAY (id INT, tags ARRAY<STRING>, numbers ARRAY<INT>)");
-        sql("CALL sys.alter_column_default_value('default.T_ARRAY', 'tags', '[tag1, tag2]')");
-        sql("CALL sys.alter_column_default_value('default.T_ARRAY', 'numbers', '[1, 2, 3]')");
+    public void test() throws Exception {
+        sql(
+                "CREATE TABLE IF NOT EXISTS test_chain_table_04 (\n"
+                        + "  id BIGINT,\n"
+                        + "  v STRING,\n"
+                        + "  proc_time BIGINT,\n"
+                        + "  pt STRING,\n"
+                        + "  PRIMARY KEY (pt, id) NOT ENFORCED\n"
+                        + ") PARTITIONED BY (pt) WITH (\n"
+                        + "'chain-table.enabled' = 'true',\n"
+                        + "'bucket' = '2',\n"
+                        + "'bucket-key' = 'id',\n"
+                        + "'deletion-vectors.enabled' = 'true',\n"
+                        + "'merge-engine' = 'deduplicate',\n"
+                        + "'sequence.field' = 'proc_time',\n"
+                        + "'partition.timestamp-pattern' = '$pt',\n"
+                        + "'partition.timestamp-formatter' = 'yyyyMMdd'\n"
+                        + "\n"
+                        + ")");
+        sql("CALL sys.create_branch('default.test_chain_table_04', 'snapshot')");
+        sql("CALL sys.create_branch('default.test_chain_table_04', 'delta')");
+        sql(
+                "ALTER TABLE test_chain_table_04 SET('scan.fallback-snapshot-branch' = 'snapshot', 'scan.fallback-delta-branch' = 'delta');");
+        sql(
+                "ALTER TABLE test_chain_table_04$branch_snapshot SET('scan.fallback-snapshot-branch' = 'snapshot', 'scan.fallback-delta-branch' = 'delta');");
+        sql(
+                "ALTER TABLE test_chain_table_04$branch_delta SET('scan.fallback-snapshot-branch' = 'snapshot', 'scan.fallback-delta-branch' = 'delta');");
 
-        sql("INSERT INTO T_ARRAY (id) VALUES (1), (2)");
-        assertThat(collectResult("SELECT * FROM T_ARRAY"))
-                .containsExactlyInAnyOrder(
-                        "+I[1, [tag1, tag2], [1, 2, 3]]", "+I[2, [tag1, tag2], [1, 2, 3]]");
-
-        sql("CREATE TABLE T_EMPTY_ARRAY (id INT, empty_tags ARRAY<STRING>)");
-        sql("CALL sys.alter_column_default_value('default.T_EMPTY_ARRAY', 'empty_tags', '[]')");
-        sql("INSERT INTO T_EMPTY_ARRAY (id) VALUES (1)");
-        assertThat(collectResult("SELECT * FROM T_EMPTY_ARRAY"))
-                .containsExactlyInAnyOrder("+I[1, []]");
+        sql(
+                "Insert into test_chain_table_04$branch_delta values(1,'a',2,'20230101'),(1,'b',3,'20230102')");
+        assertThat(collectResult("select * from test_chain_table_04 where pt='20230102'"))
+                .containsExactlyInAnyOrder("+I[1, b, 3, 20230102]");
     }
 
     @Test
