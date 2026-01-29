@@ -53,6 +53,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.paimon.CoreOptions.MergeEngine.AGGREGATE;
 import static org.apache.paimon.CoreOptions.MergeEngine.PARTIAL_UPDATE;
+import static org.apache.paimon.format.blob.BlobFileFormat.isBlobFile;
 
 /** {@link FileStoreScan} for {@link KeyValueFileStore}. */
 public class KeyValueFileStoreScan extends AbstractFileStoreScan {
@@ -134,6 +135,9 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     /** Note: Keep this thread-safe. */
     @Override
     protected boolean filterByStats(ManifestEntry entry) {
+        if (isBlobFile(entry.file().fileName())) {
+            return false;
+        }
         if (isValueFilterEnabled() && !filterByValueFilter(entry)) {
             return false;
         }

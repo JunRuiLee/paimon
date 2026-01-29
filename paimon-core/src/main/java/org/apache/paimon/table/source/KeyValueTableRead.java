@@ -23,6 +23,7 @@ import org.apache.paimon.KeyValue;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.io.BlobReferenceRowConverter;
 import org.apache.paimon.operation.MergeFileSplitRead;
 import org.apache.paimon.operation.RawFileSplitRead;
 import org.apache.paimon.operation.SplitRead;
@@ -35,6 +36,8 @@ import org.apache.paimon.table.source.splitread.IncrementalDiffReadProvider;
 import org.apache.paimon.table.source.splitread.MergeFileSplitReadProvider;
 import org.apache.paimon.table.source.splitread.PrimaryKeyTableRawFileSplitReadProvider;
 import org.apache.paimon.table.source.splitread.SplitReadProvider;
+import org.apache.paimon.types.BigIntType;
+import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.RowType;
 
 import javax.annotation.Nullable;
@@ -52,6 +55,7 @@ import java.util.function.Supplier;
 public final class KeyValueTableRead extends AbstractDataTableRead {
 
     private final List<SplitReadProvider> readProviders;
+    private final TableSchema tableSchema;
 
     @Nullable private RowType readType = null;
     private boolean forceKeepDelete = false;
@@ -65,6 +69,7 @@ public final class KeyValueTableRead extends AbstractDataTableRead {
             Supplier<RawFileSplitRead> batchRawReadSupplier,
             TableSchema schema) {
         super(schema);
+        this.tableSchema = schema;
         this.readProviders =
                 Arrays.asList(
                         new PrimaryKeyTableRawFileSplitReadProvider(
@@ -145,11 +150,51 @@ public final class KeyValueTableRead extends AbstractDataTableRead {
     public RecordReader<InternalRow> reader(Split split) throws IOException {
         for (SplitReadProvider readProvider : readProviders) {
             if (readProvider.match(split, new SplitReadProvider.Context(forceKeepDelete))) {
-                return readProvider.get().get().createReader(split);
+                return wrapBlobReferenceReader(readProvider.get().get().createReader(split));
             }
         }
 
         throw new RuntimeException("Should not happen.");
+    }
+
+    private RecordReader<InternalRow> wrapBlobReferenceReader(RecordReader<InternalRow> reader) {
+        CoreOptions options = CoreOptions.fromMap(tableSchema.options());
+        List<String> blobFieldNames = CoreOptions.blobField(tableSchema.options());
+        boolean blobAsDescriptor = options.blobAsDescriptor();
+        boolean hasPrimaryKey = !tableSchema.primaryKeys().isEmpty();
+
+        if (!hasPrimaryKey || blobAsDescriptor || blobFieldNames.isEmpty()) {
+            return reader;
+        }
+
+        RowType projected = readType != null ? readType : tableSchema.logicalRowType();
+        boolean keyValueSequenceNumberEnabled =
+                Boolean.parseBoolean(
+                        tableSchema
+                                .options()
+                                .getOrDefault(
+                                        CoreOptions.KEY_VALUE_SEQUENCE_NUMBER_ENABLED.key(),
+                                        "false"));
+        int fieldIndexOffset = keyValueSequenceNumberEnabled ? 1 : 0;
+        RowType rowTypeForCopy = projected;
+        if (keyValueSequenceNumberEnabled) {
+            List<DataType> types = new ArrayList<>(projected.getFieldCount() + 1);
+            types.add(new BigIntType(false));
+            types.addAll(projected.getFieldTypes());
+            rowTypeForCopy = RowType.of(types.toArray(new DataType[0]));
+        }
+
+        // Primary-key tables store blob references in data files; convert on read.
+        BlobReferenceRowConverter converter =
+                BlobReferenceRowConverter.createWithOffset(
+                        projected,
+                        rowTypeForCopy,
+                        fieldIndexOffset,
+                        blobFieldNames,
+                        blobAsDescriptor,
+                        null,
+                        tableSchema.options());
+        return converter == null ? reader : converter.wrap(reader);
     }
 
     public static RecordReader<InternalRow> unwrap(

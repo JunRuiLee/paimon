@@ -480,6 +480,7 @@ public class SparkCatalog extends SparkBaseCatalog
                         : Arrays.stream(pkAsString.split(","))
                                 .map(String::trim)
                                 .collect(Collectors.toList());
+        boolean hasPrimaryKey = !primaryKeys.isEmpty();
         Schema.Builder schemaBuilder =
                 Schema.newBuilder()
                         .options(normalizedProperties)
@@ -494,7 +495,10 @@ public class SparkCatalog extends SparkBaseCatalog
                 checkArgument(
                         field.dataType() instanceof org.apache.spark.sql.types.BinaryType,
                         "The type of blob field must be binary");
-                type = new BlobType();
+                type =
+                        hasPrimaryKey
+                                ? toPaimonType(field.dataType()).copy(field.nullable())
+                                : new BlobType();
             } else {
                 type = toPaimonType(field.dataType()).copy(field.nullable());
             }

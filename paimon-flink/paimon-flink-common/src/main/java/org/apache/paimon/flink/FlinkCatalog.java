@@ -1013,7 +1013,8 @@ public class FlinkCatalog extends AbstractCatalog {
 
         Map<String, String> options = new HashMap<>(catalogTable.getOptions());
         List<String> blobFields = CoreOptions.blobField(options);
-        if (!blobFields.isEmpty()) {
+        boolean hasPrimaryKey = schema.getPrimaryKey().isPresent();
+        if (!blobFields.isEmpty() && !hasPrimaryKey) {
             checkArgument(
                     options.containsKey(CoreOptions.DATA_EVOLUTION_ENABLED.key()),
                     "When setting '"
@@ -1041,7 +1042,7 @@ public class FlinkCatalog extends AbstractCatalog {
                         field ->
                                 schemaBuilder.column(
                                         field.getName(),
-                                        blobFields.contains(field.getName())
+                                        blobFields.contains(field.getName()) && !hasPrimaryKey
                                                 ? toBlobType(field.getType())
                                                 : toDataType(field.getType()),
                                         columnComments.get(field.getName())));

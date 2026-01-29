@@ -23,10 +23,12 @@ import org.apache.paimon.CoreOptions.ChangelogProducer;
 import org.apache.paimon.CoreOptions.MergeEngine;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.KeyValueFileStore;
+import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.codegen.RecordEqualiser;
 import org.apache.paimon.compact.CompactManager;
 import org.apache.paimon.compact.NoopCompactManager;
 import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.data.BlobConsumer;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.serializer.RowCompactedSerializer;
 import org.apache.paimon.deletionvectors.BucketedDvMaintainer;
@@ -76,7 +78,9 @@ import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.CommitIncrement;
 import org.apache.paimon.utils.FieldsComparator;
 import org.apache.paimon.utils.FileStorePathFactory;
+import org.apache.paimon.utils.RecordWriter;
 import org.apache.paimon.utils.SnapshotManager;
+import org.apache.paimon.utils.UriReaderFactory;
 import org.apache.paimon.utils.UserDefinedSeqComparator;
 
 import org.apache.paimon.shade.caffeine2.com.github.benmanes.caffeine.cache.Cache;
@@ -119,6 +123,9 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
     private final TableSchema schema;
     private final RowType partitionType;
     private final String commitUser;
+    @Nullable private BlobConsumer blobConsumer;
+    private final List<String> blobFieldNames;
+    private final boolean blobAsDescriptor;
     @Nullable private final RecordLevelExpire recordLevelExpire;
     @Nullable private Cache<String, LookupFile> lookupFileCache;
 
@@ -185,6 +192,14 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
         this.logDedupEqualSupplier = logDedupEqualSupplier;
         this.mfFactory = mfFactory;
         this.options = options;
+        this.blobFieldNames = CoreOptions.blobField(options.toMap());
+        this.blobAsDescriptor = options.blobAsDescriptor();
+    }
+
+    @Override
+    public KeyValueFileStoreWrite withBlobConsumer(BlobConsumer blobConsumer) {
+        this.blobConsumer = blobConsumer;
+        return this;
     }
 
     @Override
@@ -197,7 +212,7 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
     }
 
     @Override
-    protected MergeTreeWriter createWriter(
+    protected RecordWriter<KeyValue> createWriter(
             BinaryRow partition,
             int bucket,
             List<DataFileMeta> restoreFiles,
@@ -222,21 +237,45 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 createCompactManager(
                         partition, bucket, compactStrategy, compactExecutor, levels, dvMaintainer);
 
-        return new MergeTreeWriter(
-                options.writeBufferSpillable(),
-                options.writeBufferSpillDiskSize(),
-                options.localSortMaxNumFileHandles(),
-                options.spillCompressOptions(),
-                ioManager,
-                compactManager,
-                restoredMaxSeqNumber,
-                keyComparator,
-                mfFactory.create(),
-                writerFactory,
-                options.commitForceCompact(),
-                options.changelogProducer(),
-                restoreIncrement,
-                UserDefinedSeqComparator.create(valueType, options));
+        MergeTreeWriter writer =
+                new MergeTreeWriter(
+                        options.writeBufferSpillable(),
+                        options.writeBufferSpillDiskSize(),
+                        options.localSortMaxNumFileHandles(),
+                        options.spillCompressOptions(),
+                        ioManager,
+                        compactManager,
+                        restoredMaxSeqNumber,
+                        keyComparator,
+                        mfFactory.create(),
+                        writerFactory,
+                        options.commitForceCompact(),
+                        options.changelogProducer(),
+                        restoreIncrement,
+                        UserDefinedSeqComparator.create(valueType, options));
+        if (blobFieldNames.isEmpty()) {
+            return writer;
+        }
+        // Primary-key tables store blob columns as references in data files.
+        // Needed only when input values are blob descriptors (external URIs).
+        UriReaderFactory uriReaderFactory = null;
+        if (blobAsDescriptor) {
+            CatalogContext catalogContext = CatalogContext.create(new Options(schema.options()));
+            uriReaderFactory = new UriReaderFactory(catalogContext);
+        }
+        return new BlobReferenceKeyValueWriter(
+                writer,
+                valueType,
+                blobFieldNames,
+                blobAsDescriptor,
+                fileIO,
+                schema.id(),
+                writerFactory.pathFactory(0),
+                options.asyncFileWrite(),
+                options.statsDenseStore(),
+                options.blobTargetFileSize(),
+                uriReaderFactory,
+                blobConsumer);
     }
 
     private CompactStrategy createCompactStrategy(CoreOptions options) {

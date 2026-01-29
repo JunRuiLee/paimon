@@ -27,8 +27,9 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.utils.UriReaderFactory;
 
 import org.apache.flink.types.Row;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.OutputStream;
 import java.net.URI;
@@ -48,44 +49,56 @@ public class BlobTableITCase extends CatalogITCaseBase {
     @Override
     protected List<String> ddl() {
         return Arrays.asList(
-                "CREATE TABLE IF NOT EXISTS blob_table (id INT, data STRING, picture BYTES) WITH ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-field'='picture')",
-                "CREATE TABLE IF NOT EXISTS blob_table_descriptor (id INT, data STRING, picture BYTES) WITH ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-field'='picture', 'blob-as-descriptor'='true')",
-                "CREATE TABLE IF NOT EXISTS multiple_blob_table (id INT, data STRING, pic1 BYTES, pic2 BYTES) WITH ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-field'='pic1,pic2')");
+                // Append tables (file storage)
+                "CREATE TABLE IF NOT EXISTS blob_table_append (id INT, data STRING, picture BYTES) WITH ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-field'='picture')",
+                "CREATE TABLE IF NOT EXISTS blob_table_descriptor_append (id INT, data STRING, picture BYTES) WITH ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-field'='picture', 'blob-as-descriptor'='true')",
+                "CREATE TABLE IF NOT EXISTS multiple_blob_table_append (id INT, data STRING, pic1 BYTES, pic2 BYTES) WITH ('row-tracking.enabled'='true', 'data-evolution.enabled'='true', 'blob-field'='pic1,pic2')",
+                // Primary key tables (reference storage)
+                "CREATE TABLE IF NOT EXISTS blob_table_pk (id INT, data STRING, picture BYTES, PRIMARY KEY (id) NOT ENFORCED) WITH ('bucket'='-1', 'blob-field'='picture')",
+                "CREATE TABLE IF NOT EXISTS blob_table_descriptor_pk (id INT, data STRING, picture BYTES, PRIMARY KEY (id) NOT ENFORCED) WITH ('bucket'='-1', 'blob-field'='picture', 'blob-as-descriptor'='true')",
+                "CREATE TABLE IF NOT EXISTS multiple_blob_table_pk (id INT, data STRING, pic1 BYTES, pic2 BYTES, PRIMARY KEY (id) NOT ENFORCED) WITH ('bucket'='-1', 'blob-field'='pic1,pic2')");
     }
 
-    @Test
-    public void testBasic() {
-        batchSql("SELECT * FROM blob_table");
-        batchSql("INSERT INTO blob_table VALUES (1, 'paimon', X'48656C6C6F')");
-        assertThat(batchSql("SELECT * FROM blob_table"))
+    @ParameterizedTest
+    @ValueSource(strings = {"append", "pk"})
+    public void testBasic(String mode) {
+        String table = tableName("blob_table", mode);
+        batchSql("SELECT * FROM " + table);
+        batchSql("INSERT INTO " + table + " VALUES (1, 'paimon', X'48656C6C6F')");
+        assertThat(batchSql("SELECT * FROM " + table))
                 .containsExactlyInAnyOrder(
                         Row.of(1, "paimon", new byte[] {72, 101, 108, 108, 111}));
-        assertThat(batchSql("SELECT picture FROM blob_table"))
+        assertThat(batchSql("SELECT picture FROM " + table))
                 .containsExactlyInAnyOrder(Row.of(new byte[] {72, 101, 108, 108, 111}));
-        assertThat(batchSql("SELECT file_path FROM `blob_table$files`").size()).isEqualTo(2);
+        assertThat(batchSql("SELECT file_path FROM `" + table + "$files`").size())
+                .isEqualTo(mode.equals("pk") ? 1 : 2);
     }
 
-    @Test
-    public void testMultipleBlobs() {
-        batchSql("SELECT * FROM multiple_blob_table");
-        batchSql("INSERT INTO multiple_blob_table VALUES (1, 'paimon', X'48656C6C6F', X'5945')");
-        assertThat(batchSql("SELECT * FROM multiple_blob_table"))
+    @ParameterizedTest
+    @ValueSource(strings = {"append", "pk"})
+    public void testMultipleBlobs(String mode) {
+        String table = tableName("multiple_blob_table", mode);
+        batchSql("SELECT * FROM " + table);
+        batchSql("INSERT INTO " + table + " VALUES (1, 'paimon', X'48656C6C6F', X'5945')");
+        assertThat(batchSql("SELECT * FROM " + table))
                 .containsExactlyInAnyOrder(
                         Row.of(
                                 1,
                                 "paimon",
                                 new byte[] {72, 101, 108, 108, 111},
                                 new byte[] {89, 69}));
-        assertThat(batchSql("SELECT pic1 FROM multiple_blob_table"))
+        assertThat(batchSql("SELECT pic1 FROM " + table))
                 .containsExactlyInAnyOrder(Row.of(new byte[] {72, 101, 108, 108, 111}));
-        assertThat(batchSql("SELECT pic2 FROM multiple_blob_table"))
+        assertThat(batchSql("SELECT pic2 FROM " + table))
                 .containsExactlyInAnyOrder(Row.of(new byte[] {89, 69}));
-        assertThat(batchSql("SELECT file_path FROM `multiple_blob_table$files`").size())
-                .isEqualTo(3);
+        assertThat(batchSql("SELECT file_path FROM `" + table + "$files`").size())
+                .isEqualTo(mode.equals("pk") ? 1 : 3);
     }
 
-    @Test
-    public void testWriteBlobAsDescriptor() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"append", "pk"})
+    public void testWriteBlobAsDescriptor(String mode) throws Exception {
+        String table = tableName("blob_table_descriptor", mode);
         byte[] blobData = new byte[1024 * 1024];
         RANDOM.nextBytes(blobData);
         FileIO fileIO = new LocalFileIO();
@@ -97,11 +110,13 @@ public class BlobTableITCase extends CatalogITCaseBase {
 
         BlobDescriptor blobDescriptor = new BlobDescriptor(uri, 0, blobData.length);
         batchSql(
-                "INSERT INTO blob_table_descriptor VALUES (1, 'paimon', X'"
+                "INSERT INTO "
+                        + table
+                        + " VALUES (1, 'paimon', X'"
                         + bytesToHex(blobDescriptor.serialize())
                         + "')");
         byte[] newDescriptorBytes =
-                (byte[]) batchSql("SELECT picture FROM blob_table_descriptor").get(0).getField(0);
+                (byte[]) batchSql("SELECT picture FROM " + table).get(0).getField(0);
         BlobDescriptor newBlobDescriptor = BlobDescriptor.deserialize(newDescriptorBytes);
         Options options = new Options();
         options.set("warehouse", warehouse.toString());
@@ -113,13 +128,15 @@ public class BlobTableITCase extends CatalogITCaseBase {
         assertThat(blob.toData()).isEqualTo(blobData);
         URI blobUri = URI.create(blob.toDescriptor().uri());
         assertThat(blobUri.getScheme()).isNotNull();
-        batchSql("ALTER TABLE blob_table_descriptor SET ('blob-as-descriptor'='false')");
-        assertThat(batchSql("SELECT * FROM blob_table_descriptor"))
+        batchSql("ALTER TABLE " + table + " SET ('blob-as-descriptor'='false')");
+        assertThat(batchSql("SELECT * FROM " + table))
                 .containsExactlyInAnyOrder(Row.of(1, "paimon", blobData));
     }
 
-    @Test
-    public void testWriteBlobWithBuiltInFunction() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"append", "pk"})
+    public void testWriteBlobWithBuiltInFunction(String mode) throws Exception {
+        String table = tableName("blob_table_descriptor", mode);
         byte[] blobData = new byte[1024 * 1024];
         RANDOM.nextBytes(blobData);
         FileIO fileIO = new LocalFileIO();
@@ -131,11 +148,13 @@ public class BlobTableITCase extends CatalogITCaseBase {
 
         BlobDescriptor blobDescriptor = new BlobDescriptor(uri, 0, blobData.length);
         batchSql(
-                "INSERT INTO blob_table_descriptor VALUES (1, 'paimon', sys.path_to_descriptor('"
+                "INSERT INTO "
+                        + table
+                        + " VALUES (1, 'paimon', sys.path_to_descriptor('"
                         + uri
                         + "'))");
         byte[] newDescriptorBytes =
-                (byte[]) batchSql("SELECT picture FROM blob_table_descriptor").get(0).getField(0);
+                (byte[]) batchSql("SELECT picture FROM " + table).get(0).getField(0);
         BlobDescriptor newBlobDescriptor = BlobDescriptor.deserialize(newDescriptorBytes);
         Options options = new Options();
         options.set("warehouse", warehouse.toString());
@@ -147,12 +166,16 @@ public class BlobTableITCase extends CatalogITCaseBase {
         assertThat(blob.toData()).isEqualTo(blobData);
         URI blobUri = URI.create(blob.toDescriptor().uri());
         assertThat(blobUri.getScheme()).isNotNull();
-        batchSql("ALTER TABLE blob_table_descriptor SET ('blob-as-descriptor'='false')");
-        assertThat(batchSql("SELECT * FROM blob_table_descriptor"))
+        batchSql("ALTER TABLE " + table + " SET ('blob-as-descriptor'='false')");
+        assertThat(batchSql("SELECT * FROM " + table))
                 .containsExactlyInAnyOrder(Row.of(1, "paimon", blobData));
     }
 
     private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
+
+    private static String tableName(String base, String mode) {
+        return base + "_" + mode;
+    }
 
     public static String bytesToHex(byte[] bytes) {
         char[] hexChars = new char[bytes.length * 2];
