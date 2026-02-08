@@ -202,6 +202,33 @@ public class SparkChainTableITCase {
                         "[3,1,1,20250811]",
                         "[4,1,1,20250811]");
 
+        /** Chain read with filter */
+        assertThat(
+                        spark
+                                .sql(
+                                        "SELECT * FROM `my_db1`.`chain_test` where dt = '20250811' and t1 = 1")
+                                .collectAsList().stream()
+                                .map(Row::toString)
+                                .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,2,1-1,20250811]");
+        assertThat(
+                        spark
+                                .sql(
+                                        "SELECT * FROM `my_db1`.`chain_test` where dt = '20250811' and t1 = 4")
+                                .collectAsList().stream()
+                                .map(Row::toString)
+                                .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[4,1,1,20250811]");
+
+        assertThat(
+                        spark
+                                .sql(
+                                        "SELECT * FROM `my_db1`.`chain_test` where dt in ('20250811', '20250812') and t1 = 1")
+                                .collectAsList().stream()
+                                .map(Row::toString)
+                                .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,2,1-1,20250811]", "[1,2,1-1,20250812]");
+
         /** Multi partition Read */
         assertThat(
                         spark
@@ -401,6 +428,16 @@ public class SparkChainTableITCase {
                         "[2,2,1-1,20250810,23]",
                         "[3,1,1,20250810,23]",
                         "[4,1,1,20250810,23]");
+
+        /** Chain read with non-partition filter */
+        assertThat(
+                        spark
+                                .sql(
+                                        "SELECT * FROM `my_db1`.`chain_test` where dt = '20250810' and hour = '23' and t1 = 1")
+                                .collectAsList().stream()
+                                .map(Row::toString)
+                                .collect(Collectors.toList()))
+                .containsExactlyInAnyOrder("[1,2,1-1,20250810,23]");
 
         /** Multi partition Read */
         assertThat(
