@@ -42,10 +42,10 @@ import static org.apache.paimon.utils.SerializationUtils.newStringType;
 import static org.apache.paimon.utils.SerializationUtils.serializeBinaryRow;
 
 /**
- * Legacy serializer for {@link DataFileMeta} preserving the 19-column schema used by DataSplit V7
- * (before the addition of {@code _WRITE_COLS} and {@code _COMMIT_SNAPSHOT_ID}).
+ * Legacy serializer for {@link DataFileMeta} preserving the 20-column schema used by DataSplit V8
+ * and CommitMessage V11 (before the addition of {@code _COMMIT_SNAPSHOT_ID}).
  */
-public class DataFileMetaFirstRowIdLegacySerializer extends ObjectSerializer<DataFileMeta> {
+public class DataFileMetaLegacyV8Serializer extends ObjectSerializer<DataFileMeta> {
 
     private static final long serialVersionUID = 1L;
 
@@ -75,9 +75,11 @@ public class DataFileMetaFirstRowIdLegacySerializer extends ObjectSerializer<Dat
                                     "_VALUE_STATS_COLS",
                                     DataTypes.ARRAY(DataTypes.STRING().notNull())),
                             new DataField(17, "_EXTERNAL_PATH", newStringType(true)),
-                            new DataField(18, "_FIRST_ROW_ID", new BigIntType(true))));
+                            new DataField(18, "_FIRST_ROW_ID", new BigIntType(true)),
+                            new DataField(
+                                    19, "_WRITE_COLS", new ArrayType(true, newStringType(false)))));
 
-    public DataFileMetaFirstRowIdLegacySerializer() {
+    public DataFileMetaLegacyV8Serializer() {
         super(SCHEMA);
     }
 
@@ -102,7 +104,8 @@ public class DataFileMetaFirstRowIdLegacySerializer extends ObjectSerializer<Dat
                 meta.fileSource().map(FileSource::toByteValue).orElse(null),
                 toStringArrayData(meta.valueStatsCols()),
                 meta.externalPath().map(BinaryString::fromString).orElse(null),
-                meta.firstRowId());
+                meta.firstRowId(),
+                meta.writeCols() == null ? null : toStringArrayData(meta.writeCols()));
     }
 
     @Override
@@ -127,6 +130,7 @@ public class DataFileMetaFirstRowIdLegacySerializer extends ObjectSerializer<Dat
                 row.isNullAt(16) ? null : fromStringArrayData(row.getArray(16)),
                 row.isNullAt(17) ? null : row.getString(17).toString(),
                 row.isNullAt(18) ? null : row.getLong(18),
+                row.isNullAt(19) ? null : fromStringArrayData(row.getArray(19)),
                 null);
     }
 }
