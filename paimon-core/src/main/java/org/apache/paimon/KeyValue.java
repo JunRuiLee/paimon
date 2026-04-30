@@ -21,12 +21,14 @@ package org.apache.paimon;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
+import org.apache.paimon.format.SimpleColStats;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.InternalRowUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -43,6 +45,14 @@ public class KeyValue {
 
     public static final long UNKNOWN_SEQUENCE = -1;
     public static final int UNKNOWN_LEVEL = -1;
+
+    /**
+     * Number of meta columns ({@link #SEQUENCE_NUMBER}, {@link #VALUE_KIND}) sitting between key
+     * fields and value fields in the KeyValue physical schema. Any code computing the value-start
+     * offset from first principles must derive it from this constant; otherwise future additions of
+     * meta columns silently desynchronise readers, writers, and stats extraction.
+     */
+    public static final int META_FIELD_COUNT = 2;
 
     private InternalRow key;
     // determined after written into memory table or read from file
@@ -162,6 +172,15 @@ public class KeyValue {
         }
 
         return projection;
+    }
+
+    /**
+     * Extract the value-column slice of a per-column stats array laid out as {@code [keyStats... |
+     * metaStats... | valueStats...]}. Pass {@code numKeyFields = 0} for thin-mode writers (whose
+     * rowStats do not include key columns).
+     */
+    public static SimpleColStats[] extractValueStats(SimpleColStats[] rowStats, int numKeyFields) {
+        return Arrays.copyOfRange(rowStats, numKeyFields + META_FIELD_COUNT, rowStats.length);
     }
 
     @VisibleForTesting
