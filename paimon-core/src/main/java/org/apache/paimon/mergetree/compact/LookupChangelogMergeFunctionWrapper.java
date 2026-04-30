@@ -71,7 +71,8 @@ public class LookupChangelogMergeFunctionWrapper<T>
             @Nullable RecordEqualiser valueEqualiser,
             LookupStrategy lookupStrategy,
             @Nullable BucketedDvMaintainer deletionVectorsMaintainer,
-            @Nullable UserDefinedSeqComparator userDefinedSeqComparator) {
+            @Nullable UserDefinedSeqComparator userDefinedSeqComparator,
+            boolean snapshotSequenceOrdering) {
         MergeFunction<KeyValue> mergeFunction = mergeFunctionFactory.create();
         checkArgument(
                 mergeFunction instanceof LookupMergeFunction,
@@ -87,7 +88,8 @@ public class LookupChangelogMergeFunctionWrapper<T>
         this.valueEqualiser = valueEqualiser;
         this.lookupStrategy = lookupStrategy;
         this.deletionVectorsMaintainer = deletionVectorsMaintainer;
-        this.comparator = createSequenceComparator(userDefinedSeqComparator);
+        this.comparator =
+                createSequenceComparator(userDefinedSeqComparator, snapshotSequenceOrdering);
     }
 
     @Override
@@ -176,8 +178,11 @@ public class LookupChangelogMergeFunctionWrapper<T>
     }
 
     private Comparator<KeyValue> createSequenceComparator(
-            @Nullable FieldsComparator userDefinedSeqComparator) {
+            @Nullable FieldsComparator userDefinedSeqComparator, boolean snapshotSequenceOrdering) {
         if (userDefinedSeqComparator == null) {
+            if (snapshotSequenceOrdering) {
+                return KeyValue.snapshotThenSequenceComparator();
+            }
             return Comparator.comparingLong(KeyValue::sequenceNumber);
         }
 

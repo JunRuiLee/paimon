@@ -40,18 +40,23 @@ public class SortMergeReaderWithLoserTree<T> implements SortMergeReader<T> {
             List<RecordReader<KeyValue>> readers,
             Comparator<InternalRow> userKeyComparator,
             @Nullable FieldsComparator userDefinedSeqComparator,
-            MergeFunctionWrapper<T> mergeFunctionWrapper) {
+            MergeFunctionWrapper<T> mergeFunctionWrapper,
+            boolean snapshotSequenceOrdering) {
         this.mergeFunctionWrapper = mergeFunctionWrapper;
         this.loserTree =
                 new LoserTree<>(
                         readers,
                         (e1, e2) -> userKeyComparator.compare(e2.key(), e1.key()),
-                        createSequenceComparator(userDefinedSeqComparator));
+                        createSequenceComparator(
+                                userDefinedSeqComparator, snapshotSequenceOrdering));
     }
 
     private Comparator<KeyValue> createSequenceComparator(
-            @Nullable FieldsComparator userDefinedSeqComparator) {
+            @Nullable FieldsComparator userDefinedSeqComparator, boolean snapshotSequenceOrdering) {
         if (userDefinedSeqComparator == null) {
+            if (snapshotSequenceOrdering) {
+                return KeyValue.snapshotThenSequenceComparator().reversed();
+            }
             return (e1, e2) -> Long.compare(e2.sequenceNumber(), e1.sequenceNumber());
         }
 

@@ -40,6 +40,7 @@ import org.apache.paimon.utils.IOUtils;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -52,6 +53,7 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
     @Nullable protected final FieldsComparator userDefinedSeqComparator;
     protected final MergeFunctionFactory<KeyValue> mfFactory;
     protected final MergeSorter mergeSorter;
+    protected final boolean snapshotSequenceOrdering;
     @Nullable private CompactionMetrics.Reporter metricsReporter;
 
     public MergeTreeCompactRewriter(
@@ -60,13 +62,15 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
             Comparator<InternalRow> keyComparator,
             @Nullable FieldsComparator userDefinedSeqComparator,
             MergeFunctionFactory<KeyValue> mfFactory,
-            MergeSorter mergeSorter) {
+            MergeSorter mergeSorter,
+            boolean snapshotSequenceOrdering) {
         this.readerFactory = readerFactory;
         this.writerFactory = writerFactory;
         this.keyComparator = keyComparator;
         this.userDefinedSeqComparator = userDefinedSeqComparator;
         this.mfFactory = mfFactory;
         this.mergeSorter = mergeSorter;
+        this.snapshotSequenceOrdering = snapshotSequenceOrdering;
     }
 
     @Override
@@ -107,6 +111,7 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
         List<DataFileMeta> before = extractFilesFromSections(sections);
         notifyRewriteCompactBefore(before);
         List<DataFileMeta> after = writer.result();
+        after = preAssignCommitSnapshotId(after, sections);
         after = notifyRewriteCompactAfter(after);
         if (metricsReporter != null) {
             metricsReporter.reportSortBufferMetrics(
@@ -125,6 +130,43 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
                 userDefinedSeqComparator,
                 mergeFunctionWrapper,
                 mergeSorter);
+    }
+
+    protected List<DataFileMeta> preAssignCommitSnapshotId(
+            List<DataFileMeta> outputFiles, List<List<SortedRun>> sections) {
+        if (!snapshotSequenceOrdering) {
+            return outputFiles;
+        }
+        // Correctness: a pure compaction output carries only historical data from its source
+        // files; it must inherit max(sourceIds) so it does not get "promoted" to the current
+        // commit's snapshotId (which would incorrectly make it beat concurrently-committed
+        // newer data). If any source is still pending — null (legacy / feature-off input) or
+        // Long.MAX_VALUE (in-txn placeholder from MergeTreeWriter) — the output is mixed with
+        // in-txn new data, so we defer stamping to FileStoreCommitImpl#assignCommitSnapshotId.
+        long maxSnapshotId = Long.MIN_VALUE;
+        for (List<SortedRun> runs : sections) {
+            for (SortedRun run : runs) {
+                for (DataFileMeta file : run.files()) {
+                    Long id = file.commitSnapshotId();
+                    if (!DataFileMeta.isCommittedSnapshotId(id)) {
+                        return outputFiles;
+                    }
+                    if (id > maxSnapshotId) {
+                        maxSnapshotId = id;
+                    }
+                }
+            }
+        }
+        if (maxSnapshotId == Long.MIN_VALUE) {
+            // No source files: nothing to inherit from, leave outputs untouched and let
+            // FileStoreCommitImpl stamp them at commit time.
+            return outputFiles;
+        }
+        List<DataFileMeta> result = new ArrayList<>(outputFiles.size());
+        for (DataFileMeta file : outputFiles) {
+            result.add(file.assignCommitSnapshotId(maxSnapshotId));
+        }
+        return result;
     }
 
     protected void notifyRewriteCompactBefore(List<DataFileMeta> files) {}
