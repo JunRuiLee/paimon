@@ -82,6 +82,8 @@ public class PojoDataFileMeta implements DataFileMeta {
 
     private final @Nullable List<String> writeCols;
 
+    private final @Nullable Long commitSnapshotId;
+
     public PojoDataFileMeta(
             String fileName,
             long fileSize,
@@ -103,6 +105,52 @@ public class PojoDataFileMeta implements DataFileMeta {
             @Nullable String externalPath,
             @Nullable Long firstRowId,
             @Nullable List<String> writeCols) {
+        this(
+                fileName,
+                fileSize,
+                rowCount,
+                minKey,
+                maxKey,
+                keyStats,
+                valueStats,
+                minSequenceNumber,
+                maxSequenceNumber,
+                schemaId,
+                level,
+                extraFiles,
+                creationTime,
+                deleteRowCount,
+                embeddedIndex,
+                fileSource,
+                valueStatsCols,
+                externalPath,
+                firstRowId,
+                writeCols,
+                null);
+    }
+
+    public PojoDataFileMeta(
+            String fileName,
+            long fileSize,
+            long rowCount,
+            BinaryRow minKey,
+            BinaryRow maxKey,
+            SimpleStats keyStats,
+            SimpleStats valueStats,
+            long minSequenceNumber,
+            long maxSequenceNumber,
+            long schemaId,
+            int level,
+            List<String> extraFiles,
+            Timestamp creationTime,
+            @Nullable Long deleteRowCount,
+            @Nullable byte[] embeddedIndex,
+            @Nullable FileSource fileSource,
+            @Nullable List<String> valueStatsCols,
+            @Nullable String externalPath,
+            @Nullable Long firstRowId,
+            @Nullable List<String> writeCols,
+            @Nullable Long commitSnapshotId) {
         this.fileName = fileName;
         this.fileSize = fileSize;
 
@@ -127,6 +175,7 @@ public class PojoDataFileMeta implements DataFileMeta {
         this.externalPath = externalPath;
         this.firstRowId = firstRowId;
         this.writeCols = writeCols;
+        this.commitSnapshotId = commitSnapshotId;
     }
 
     @Override
@@ -252,6 +301,43 @@ public class PojoDataFileMeta implements DataFileMeta {
         return writeCols;
     }
 
+    @Nullable
+    @Override
+    public Long commitSnapshotId() {
+        return commitSnapshotId;
+    }
+
+    @Override
+    public PojoDataFileMeta assignCommitSnapshotId(long snapshotId) {
+        checkArgument(
+                commitSnapshotId == null || commitSnapshotId == Long.MAX_VALUE,
+                "commitSnapshotId is already set to committed id %s, cannot reassign to %s.",
+                commitSnapshotId,
+                snapshotId);
+        return new PojoDataFileMeta(
+                fileName,
+                fileSize,
+                rowCount,
+                minKey,
+                maxKey,
+                keyStats,
+                valueStats,
+                minSequenceNumber,
+                maxSequenceNumber,
+                schemaId,
+                level,
+                extraFiles,
+                creationTime,
+                deleteRowCount,
+                embeddedIndex,
+                fileSource,
+                valueStatsCols,
+                externalPath,
+                firstRowId,
+                writeCols,
+                snapshotId);
+    }
+
     @Override
     public PojoDataFileMeta upgrade(int newLevel) {
         checkArgument(newLevel > this.level);
@@ -275,7 +361,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -301,7 +388,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 newExternalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -326,7 +414,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 Collections.emptyList(),
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -351,7 +440,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -376,7 +466,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -401,7 +492,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -426,7 +518,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 newExternalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -451,7 +544,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -513,7 +607,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 && Objects.equals(valueStatsCols, that.valueStatsCols())
                 && Objects.equals(externalPath, that.externalPath().orElse(null))
                 && Objects.equals(firstRowId, that.firstRowId())
-                && Objects.equals(writeCols, that.writeCols());
+                && Objects.equals(writeCols, that.writeCols())
+                && Objects.equals(commitSnapshotId, that.commitSnapshotId());
     }
 
     @Override
@@ -538,7 +633,8 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 
     @Override
@@ -548,7 +644,7 @@ public class PojoDataFileMeta implements DataFileMeta {
                         + "minKey: %s, maxKey: %s, keyStats: %s, valueStats: %s, "
                         + "minSequenceNumber: %d, maxSequenceNumber: %d, "
                         + "schemaId: %d, level: %d, extraFiles: %s, creationTime: %s, "
-                        + "deleteRowCount: %d, fileSource: %s, valueStatsCols: %s, externalPath: %s, firstRowId: %s, writeCols: %s}",
+                        + "deleteRowCount: %s, fileSource: %s, valueStatsCols: %s, externalPath: %s, firstRowId: %s, writeCols: %s, commitSnapshotId: %s}",
                 fileName,
                 fileSize,
                 rowCount,
@@ -568,6 +664,7 @@ public class PojoDataFileMeta implements DataFileMeta {
                 valueStatsCols,
                 externalPath,
                 firstRowId,
-                writeCols);
+                writeCols,
+                commitSnapshotId);
     }
 }

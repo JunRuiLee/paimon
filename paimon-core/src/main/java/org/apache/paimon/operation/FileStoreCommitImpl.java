@@ -932,6 +932,13 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                 deltaFiles = assigned.assignedEntries;
             }
 
+            if (options.snapshotSequenceOrdering()) {
+                deltaFiles = assignCommitSnapshotId(newSnapshotId, deltaFiles);
+                if (!changelogFiles.isEmpty()) {
+                    changelogFiles = assignCommitSnapshotId(newSnapshotId, changelogFiles);
+                }
+            }
+
             // the added records subtract the deleted records from
             long deltaRecordCount = recordCountAdd(deltaFiles) - recordCountDelete(deltaFiles);
             long totalRecordCount = previousTotalRecordCount + deltaRecordCount;
@@ -1191,5 +1198,26 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         IOUtils.closeAllQuietly(commitPreCallbacks);
         IOUtils.closeAllQuietly(commitCallbacks);
         IOUtils.closeQuietly(snapshotCommit);
+    }
+
+    /**
+     * Assign the current snapshotId to ADD entries whose {@code commitSnapshotId} is still pending
+     * (either {@code null} from feature-off / legacy input, or {@link Long#MAX_VALUE} stamped by
+     * {@code MergeTreeWriter} as an in-txn placeholder). Never overwrites a file that already
+     * carries a real, committed snapshotId — see the immutability invariant on {@link
+     * DataFileMeta#commitSnapshotId()}.
+     */
+    private static List<ManifestEntry> assignCommitSnapshotId(
+            long snapshotId, List<ManifestEntry> files) {
+        List<ManifestEntry> result = new ArrayList<>(files.size());
+        for (ManifestEntry entry : files) {
+            if (entry.kind() == FileKind.ADD
+                    && !DataFileMeta.isCommittedSnapshotId(entry.file().commitSnapshotId())) {
+                result.add(entry.assignCommitSnapshotId(snapshotId));
+            } else {
+                result.add(entry);
+            }
+        }
+        return result;
     }
 }

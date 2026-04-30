@@ -37,11 +37,18 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
     private final KeyValueSerializer serializer;
     private final int level;
 
+    private final long fileSnapshotId;
+
     public KeyValueDataFileRecordReader(
-            FileRecordReader<InternalRow> reader, RowType keyType, RowType valueType, int level) {
+            FileRecordReader<InternalRow> reader,
+            RowType keyType,
+            RowType valueType,
+            int level,
+            long fileSnapshotId) {
         this.reader = reader;
         this.serializer = new KeyValueSerializer(keyType, valueType);
         this.level = level;
+        this.fileSnapshotId = fileSnapshotId;
     }
 
     @Nullable
@@ -53,10 +60,21 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
         }
 
         return iterator.transform(
-                internalRow ->
-                        internalRow == null
-                                ? null
-                                : serializer.fromRow(internalRow).setLevel(level));
+                internalRow -> {
+                    if (internalRow == null) {
+                        return null;
+                    }
+                    KeyValue kv = serializer.fromRow(internalRow).setLevel(level);
+                    // Per-record fallback: when the per-record snapshotId is not set (UNKNOWN /
+                    // non-positive), inherit the file-level id. File-level Long.MAX_VALUE
+                    // (in-txn placeholder stamped by MergeTreeWriter) is intentionally propagated
+                    // as-is — it ensures in-txn rows beat already-committed rows during in-txn
+                    // compaction, and is rewritten to a real id at commit time.
+                    if (!KeyValue.isCommittedSnapshotId(kv.snapshotId()) && fileSnapshotId > 0) {
+                        kv.setSnapshotId(fileSnapshotId);
+                    }
+                    return kv;
+                });
     }
 
     @Override

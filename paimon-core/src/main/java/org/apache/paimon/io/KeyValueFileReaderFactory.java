@@ -168,7 +168,14 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
                     new ApplyDeletionVectorReader(fileRecordReader, deletionVector.get());
         }
 
-        return new KeyValueDataFileRecordReader(fileRecordReader, keyType, valueType, file.level());
+        return new KeyValueDataFileRecordReader(
+                fileRecordReader,
+                keyType,
+                valueType,
+                file.level(),
+                file.commitSnapshotId() != null
+                        ? file.commitSnapshotId()
+                        : KeyValue.UNKNOWN_SNAPSHOT_ID);
     }
 
     public static Builder builder(

@@ -87,7 +87,8 @@ public interface DataFileMeta {
                             new DataField(17, "_EXTERNAL_PATH", newStringType(true)),
                             new DataField(18, "_FIRST_ROW_ID", new BigIntType(true)),
                             new DataField(
-                                    19, "_WRITE_COLS", new ArrayType(true, newStringType(false)))));
+                                    19, "_WRITE_COLS", new ArrayType(true, newStringType(false))),
+                            new DataField(20, "_COMMIT_SNAPSHOT_ID", new BigIntType(true))));
 
     BinaryRow EMPTY_MIN_KEY = EMPTY_ROW;
     BinaryRow EMPTY_MAX_KEY = EMPTY_ROW;
@@ -259,6 +260,52 @@ public interface DataFileMeta {
                 writeCols);
     }
 
+    static DataFileMeta create(
+            String fileName,
+            long fileSize,
+            long rowCount,
+            BinaryRow minKey,
+            BinaryRow maxKey,
+            SimpleStats keyStats,
+            SimpleStats valueStats,
+            long minSequenceNumber,
+            long maxSequenceNumber,
+            long schemaId,
+            int level,
+            List<String> extraFiles,
+            Timestamp creationTime,
+            @Nullable Long deleteRowCount,
+            @Nullable byte[] embeddedIndex,
+            @Nullable FileSource fileSource,
+            @Nullable List<String> valueStatsCols,
+            @Nullable String externalPath,
+            @Nullable Long firstRowId,
+            @Nullable List<String> writeCols,
+            @Nullable Long commitSnapshotId) {
+        return new PojoDataFileMeta(
+                fileName,
+                fileSize,
+                rowCount,
+                minKey,
+                maxKey,
+                keyStats,
+                valueStats,
+                minSequenceNumber,
+                maxSequenceNumber,
+                schemaId,
+                level,
+                extraFiles,
+                creationTime,
+                deleteRowCount,
+                embeddedIndex,
+                fileSource,
+                valueStatsCols,
+                externalPath,
+                firstRowId,
+                writeCols,
+                commitSnapshotId);
+    }
+
     String fileName();
 
     long fileSize();
@@ -328,6 +375,42 @@ public interface DataFileMeta {
     DataFileMeta assignSequenceNumber(long minSequenceNumber, long maxSequenceNumber);
 
     DataFileMeta assignFirstRowId(long firstRowId);
+
+    /**
+     * Snapshot id that this file was committed in, for {@code sequence.snapshot-ordering}.
+     *
+     * <p>States:
+     *
+     * <ul>
+     *   <li>{@code null} — file was written without snapshot ordering (legacy / feature off).
+     *   <li>{@link Long#MAX_VALUE} — in-transaction placeholder stamped by {@code MergeTreeWriter};
+     *       acts as "winner" during in-txn compaction so newly-written rows beat already-committed
+     *       rows. Replaced with the real snapshot id at commit time.
+     *   <li>positive value — the committed snapshot id. <b>Invariant:</b> once assigned to a real
+     *       value, this field MUST NOT be overwritten; both {@link
+     *       org.apache.paimon.operation.FileStoreCommitImpl} and {@code
+     *       MergeTreeCompactRewriter#preAssignCommitSnapshotId} must treat such files as sealed.
+     * </ul>
+     *
+     * <p>Per-row {@code snapshotId} is materialized into the physical column during compaction (see
+     * {@link org.apache.paimon.KeyValueSerializer#toRow}), so rows retain their original snapshot
+     * lineage even when the containing file is re-stamped with {@code max(sourceIds)} by {@code
+     * preAssignCommitSnapshotId}.
+     */
+    @Nullable
+    Long commitSnapshotId();
+
+    DataFileMeta assignCommitSnapshotId(long snapshotId);
+
+    /**
+     * Whether the given file-level {@code commitSnapshotId} represents a real, committed snapshot.
+     * Returns {@code false} for {@code null} (no ordering info, legacy / feature off) and {@link
+     * Long#MAX_VALUE} (in-txn placeholder awaiting commit-time assignment). See {@link
+     * #commitSnapshotId()} for state semantics.
+     */
+    static boolean isCommittedSnapshotId(@Nullable Long snapshotId) {
+        return snapshotId != null && snapshotId > 0 && snapshotId != Long.MAX_VALUE;
+    }
 
     default List<Path> collectFiles(DataFilePathFactory pathFactory) {
         List<Path> paths = new ArrayList<>();

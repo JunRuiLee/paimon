@@ -72,6 +72,7 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
     private final boolean commitForceCompact;
     private final ChangelogProducer changelogProducer;
     @Nullable private final FieldsComparator userDefinedSeqComparator;
+    private final boolean snapshotSequenceOrdering;
 
     private final LinkedHashSet<DataFileMeta> newFiles;
     private final LinkedHashSet<DataFileMeta> deletedFiles;
@@ -99,7 +100,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
             boolean commitForceCompact,
             ChangelogProducer changelogProducer,
             @Nullable CommitIncrement increment,
-            @Nullable FieldsComparator userDefinedSeqComparator) {
+            @Nullable FieldsComparator userDefinedSeqComparator,
+            boolean snapshotSequenceOrdering) {
         this.writeBufferSpillable = writeBufferSpillable;
         this.maxDiskSize = maxDiskSize;
         this.sortMaxFan = sortMaxFan;
@@ -115,6 +117,8 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
         this.commitForceCompact = commitForceCompact;
         this.changelogProducer = changelogProducer;
         this.userDefinedSeqComparator = userDefinedSeqComparator;
+
+        this.snapshotSequenceOrdering = snapshotSequenceOrdering;
 
         this.newFiles = new LinkedHashSet<>();
         this.deletedFiles = new LinkedHashSet<>();
@@ -239,6 +243,9 @@ public class MergeTreeWriter implements RecordWriter<KeyValue>, MemoryOwner {
             }
 
             for (DataFileMeta fileMeta : dataWriter.result()) {
+                if (snapshotSequenceOrdering) {
+                    fileMeta = fileMeta.assignCommitSnapshotId(Long.MAX_VALUE);
+                }
                 newFiles.add(fileMeta);
                 compactManager.addNewFile(fileMeta);
             }
