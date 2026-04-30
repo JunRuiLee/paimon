@@ -53,11 +53,13 @@ public class PersistValueAndPosProcessor implements PersistProcessor<PositionedK
     @Override
     public byte[] persistToDisk(KeyValue kv, long rowPosition) {
         byte[] vBytes = serializer.apply(kv.value());
-        byte[] bytes = new byte[vBytes.length + 8 + 8 + 1];
+        // layout: [vBytes | rowPosition(8) | sequenceNumber(8) | snapshotId(8) | valueKind(1)]
+        byte[] bytes = new byte[vBytes.length + 8 + 8 + 8 + 1];
         MemorySegment segment = MemorySegment.wrap(bytes);
         segment.put(0, vBytes);
-        segment.putLong(bytes.length - 17, rowPosition);
-        segment.putLong(bytes.length - 9, kv.sequenceNumber());
+        segment.putLong(bytes.length - 25, rowPosition);
+        segment.putLong(bytes.length - 17, kv.sequenceNumber());
+        segment.putLong(bytes.length - 9, kv.snapshotId());
         segment.put(bytes.length - 1, kv.valueKind().toByteValue());
         return bytes;
     }
@@ -67,11 +69,15 @@ public class PersistValueAndPosProcessor implements PersistProcessor<PositionedK
             InternalRow key, int level, byte[] bytes, String fileName) {
         InternalRow value = deserializer.apply(bytes);
         MemorySegment segment = MemorySegment.wrap(bytes);
-        long rowPosition = segment.getLong(bytes.length - 17);
-        long sequenceNumber = segment.getLong(bytes.length - 9);
+        long rowPosition = segment.getLong(bytes.length - 25);
+        long sequenceNumber = segment.getLong(bytes.length - 17);
+        long snapshotId = segment.getLong(bytes.length - 9);
         RowKind rowKind = RowKind.fromByteValue(bytes[bytes.length - 1]);
         return new PositionedKeyValue(
-                new KeyValue().replace(key, sequenceNumber, rowKind, value).setLevel(level),
+                new KeyValue()
+                        .replace(key, sequenceNumber, rowKind, value)
+                        .setLevel(level)
+                        .setSnapshotId(snapshotId),
                 fileName,
                 rowPosition);
     }

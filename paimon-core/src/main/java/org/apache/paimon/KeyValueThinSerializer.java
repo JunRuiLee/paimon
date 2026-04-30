@@ -43,12 +43,20 @@ public class KeyValueThinSerializer extends ObjectSerializer<KeyValue> {
     }
 
     public InternalRow toRow(KeyValue record) {
-        return toRow(record.sequenceNumber(), record.valueKind(), record.value());
+        return toRow(
+                record.sequenceNumber(), record.valueKind(), record.value(), record.snapshotId());
     }
 
     public InternalRow toRow(long sequenceNumber, RowKind valueKind, InternalRow value) {
+        return toRow(sequenceNumber, valueKind, value, KeyValue.UNKNOWN_SNAPSHOT_ID);
+    }
+
+    public InternalRow toRow(
+            long sequenceNumber, RowKind valueKind, InternalRow value, long snapshotId) {
         reusedMeta.setField(0, sequenceNumber);
         reusedMeta.setField(1, valueKind.toByteValue());
+        reusedMeta.setField(
+                2, KeyValue.isCommittedSnapshotId(snapshotId) ? (Long) snapshotId : null);
         return reusedKeyWithMeta.replace(reusedMeta, value);
     }
 

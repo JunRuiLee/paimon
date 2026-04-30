@@ -44,18 +44,31 @@ public class KeyValueWithLevelNoReusingSerializer extends ObjectSerializer<KeyVa
 
     @Override
     public InternalRow toRow(KeyValue kv) {
-        GenericRow meta = GenericRow.of(kv.sequenceNumber(), kv.valueKind().toByteValue());
+        // Spill path: round-trip MAX_VALUE faithfully so the in-txn "winner" placeholder
+        // survives spill / unspill during compaction merge. Only UNKNOWN maps to null.
+        GenericRow meta =
+                GenericRow.of(
+                        kv.sequenceNumber(),
+                        kv.valueKind().toByteValue(),
+                        kv.snapshotId() == KeyValue.UNKNOWN_SNAPSHOT_ID
+                                ? null
+                                : (Long) kv.snapshotId());
         return join(join(join(kv.key(), meta), kv.value()), GenericRow.of(kv.level()));
     }
 
     @Override
     public KeyValue fromRow(InternalRow row) {
+        long snapshotId =
+                row.isNullAt(keyArity + 2)
+                        ? KeyValue.UNKNOWN_SNAPSHOT_ID
+                        : row.getLong(keyArity + 2);
         return new KeyValue()
                 .replace(
                         new OffsetRow(keyArity, 0).replace(row),
                         row.getLong(keyArity),
                         RowKind.fromByteValue(row.getByte(keyArity + 1)),
                         new OffsetRow(valueArity, keyArity + META_FIELD_COUNT).replace(row))
-                .setLevel(row.getInt(keyArity + META_FIELD_COUNT + valueArity));
+                .setLevel(row.getInt(keyArity + META_FIELD_COUNT + valueArity))
+                .setSnapshotId(snapshotId);
     }
 }

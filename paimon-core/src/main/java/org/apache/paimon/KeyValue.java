@@ -26,13 +26,16 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.InternalRowUtils;
+import org.apache.paimon.utils.Preconditions;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.paimon.table.SpecialFields.COMMIT_SNAPSHOT_ID;
 import static org.apache.paimon.table.SpecialFields.LEVEL;
 import static org.apache.paimon.table.SpecialFields.SEQUENCE_NUMBER;
 import static org.apache.paimon.table.SpecialFields.VALUE_KIND;
@@ -45,14 +48,16 @@ public class KeyValue {
 
     public static final long UNKNOWN_SEQUENCE = -1;
     public static final int UNKNOWN_LEVEL = -1;
+    public static final long UNKNOWN_SNAPSHOT_ID = -1;
 
     /**
-     * Number of meta columns ({@link #SEQUENCE_NUMBER}, {@link #VALUE_KIND}) sitting between key
-     * fields and value fields in the KeyValue physical schema. Any code computing the value-start
-     * offset from first principles must derive it from this constant; otherwise future additions of
-     * meta columns silently desynchronise readers, writers, and stats extraction.
+     * Number of meta columns ({@link #SEQUENCE_NUMBER}, {@link #VALUE_KIND}, {@link
+     * #COMMIT_SNAPSHOT_ID}) sitting between key fields and value fields in the KeyValue physical
+     * schema. Any code computing the value-start offset from first principles must derive it from
+     * this constant; otherwise future additions of meta columns silently desynchronise readers,
+     * writers, and stats extraction.
      */
-    public static final int META_FIELD_COUNT = 2;
+    public static final int META_FIELD_COUNT = 3;
 
     private InternalRow key;
     // determined after written into memory table or read from file
@@ -61,11 +66,17 @@ public class KeyValue {
     private InternalRow value;
     // determined after read from file
     private int level;
+    private long snapshotId;
 
     public KeyValue replace(InternalRow key, RowKind valueKind, InternalRow value) {
         return replace(key, UNKNOWN_SEQUENCE, valueKind, value);
     }
 
+    /**
+     * Resets all fields of this reusable {@link KeyValue}. Note that {@link #level} and {@link
+     * #snapshotId} are reset to their UNKNOWN sentinels; callers that need a specific level or
+     * snapshotId must invoke {@link #setLevel} / {@link #setSnapshotId} after this call.
+     */
     public KeyValue replace(
             InternalRow key, long sequenceNumber, RowKind valueKind, InternalRow value) {
         this.key = key;
@@ -73,6 +84,7 @@ public class KeyValue {
         this.valueKind = valueKind;
         this.value = value;
         this.level = UNKNOWN_LEVEL;
+        this.snapshotId = UNKNOWN_SNAPSHOT_ID;
         return this;
     }
 
@@ -120,6 +132,41 @@ public class KeyValue {
         return this;
     }
 
+    public long snapshotId() {
+        return snapshotId;
+    }
+
+    public KeyValue setSnapshotId(long snapshotId) {
+        this.snapshotId = snapshotId;
+        return this;
+    }
+
+    /**
+     * A snapshotId represents a real committed snapshot iff it is positive and not {@link
+     * Long#MAX_VALUE}. {@link #UNKNOWN_SNAPSHOT_ID} and other non-positive values mean "not known";
+     * {@code MAX_VALUE} is an in-transaction placeholder used by {@code MergeTreeWriter} (so
+     * newly-written rows beat already-committed rows during in-txn compaction) and is also not yet
+     * a committed id. Non-committed ids are serialized as {@code null} in the physical column; real
+     * ones are materialized.
+     */
+    public static boolean isCommittedSnapshotId(long snapshotId) {
+        return snapshotId > 0 && snapshotId != Long.MAX_VALUE;
+    }
+
+    /**
+     * Ascending comparator used when {@code sequence.snapshot-ordering} is enabled and no
+     * user-defined sequence field is configured. Records from later snapshots sort later; ties are
+     * broken by sequence number.
+     */
+    public static Comparator<KeyValue> snapshotThenSequenceComparator() {
+        return (o1, o2) -> {
+            if (o1.snapshotId() != o2.snapshotId()) {
+                return Long.compare(o1.snapshotId(), o2.snapshotId());
+            }
+            return Long.compare(o1.sequenceNumber(), o2.sequenceNumber());
+        };
+    }
+
     public static RowType schema(RowType keyType, RowType valueType) {
         return new RowType(false, createKeyValueFields(keyType.getFields(), valueType.getFields()));
     }
@@ -144,12 +191,16 @@ public class KeyValue {
         fields.addAll(keyFields);
         fields.add(SEQUENCE_NUMBER);
         fields.add(VALUE_KIND);
+        fields.add(COMMIT_SNAPSHOT_ID);
         fields.addAll(valueFields);
         return fields;
     }
 
     public static int[][] project(
             int[][] keyProjection, int[][] valueProjection, int numKeyFields) {
+        Preconditions.checkState(
+                META_FIELD_COUNT == 3,
+                "project() hard-codes 3 meta slots; bumping META_FIELD_COUNT requires extending this method.");
         int[][] projection =
                 new int[keyProjection.length + META_FIELD_COUNT + valueProjection.length][];
 
@@ -164,6 +215,9 @@ public class KeyValue {
 
         // value kind (meta slot 1)
         projection[keyProjection.length + 1] = new int[] {numKeyFields + 1};
+
+        // commit snapshot id (meta slot 2)
+        projection[keyProjection.length + 2] = new int[] {numKeyFields + 2};
 
         // value
         for (int i = 0; i < valueProjection.length; i++) {
@@ -194,7 +248,8 @@ public class KeyValue {
                         sequenceNumber,
                         valueKind,
                         valueSerializer.copy(value))
-                .setLevel(level);
+                .setLevel(level)
+                .setSnapshotId(snapshotId);
     }
 
     @VisibleForTesting

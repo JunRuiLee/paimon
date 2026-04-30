@@ -111,6 +111,7 @@ public class SortBufferWriteBuffer implements WriteBuffer {
         List<DataType> fieldTypes = new ArrayList<>(keyType.getFieldTypes());
         fieldTypes.add(new BigIntType(false));
         fieldTypes.add(new TinyIntType(false));
+        fieldTypes.add(new BigIntType(true));
         fieldTypes.addAll(valueType.getFieldTypes());
 
         NormalizedKeyComputer normalizedKeyComputer =

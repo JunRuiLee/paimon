@@ -48,10 +48,12 @@ public class PersistValueProcessor implements PersistProcessor<KeyValue> {
     @Override
     public byte[] persistToDisk(KeyValue kv) {
         byte[] vBytes = serializer.apply(kv.value());
-        byte[] bytes = new byte[vBytes.length + 8 + 1];
+        // layout: [vBytes | sequenceNumber(8) | snapshotId(8) | valueKind(1)]
+        byte[] bytes = new byte[vBytes.length + 8 + 8 + 1];
         MemorySegment segment = MemorySegment.wrap(bytes);
         segment.put(0, vBytes);
-        segment.putLong(bytes.length - 9, kv.sequenceNumber());
+        segment.putLong(bytes.length - 17, kv.sequenceNumber());
+        segment.putLong(bytes.length - 9, kv.snapshotId());
         segment.put(bytes.length - 1, kv.valueKind().toByteValue());
         return bytes;
     }
@@ -59,9 +61,14 @@ public class PersistValueProcessor implements PersistProcessor<KeyValue> {
     @Override
     public KeyValue readFromDisk(InternalRow key, int level, byte[] bytes, String fileName) {
         InternalRow value = deserializer.apply(bytes);
-        long sequenceNumber = MemorySegment.wrap(bytes).getLong(bytes.length - 9);
+        MemorySegment segment = MemorySegment.wrap(bytes);
+        long sequenceNumber = segment.getLong(bytes.length - 17);
+        long snapshotId = segment.getLong(bytes.length - 9);
         RowKind rowKind = RowKind.fromByteValue(bytes[bytes.length - 1]);
-        return new KeyValue().replace(key, sequenceNumber, rowKind, value).setLevel(level);
+        return new KeyValue()
+                .replace(key, sequenceNumber, rowKind, value)
+                .setLevel(level)
+                .setSnapshotId(snapshotId);
     }
 
     public static Factory<KeyValue> factory(RowType valueType) {

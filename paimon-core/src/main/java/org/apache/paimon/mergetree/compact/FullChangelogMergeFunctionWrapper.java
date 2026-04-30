@@ -126,6 +126,7 @@ public class FullChangelogMergeFunctionWrapper implements MergeFunctionWrapper<C
     }
 
     private KeyValue replace(KeyValue reused, RowKind valueKind, KeyValue from) {
-        return reused.replace(from.key(), from.sequenceNumber(), valueKind, from.value());
+        return reused.replace(from.key(), from.sequenceNumber(), valueKind, from.value())
+                .setSnapshotId(from.snapshotId());
     }
 }
