@@ -139,7 +139,8 @@ public class KeyValue {
      */
     public static List<DataField> createKeyValueFields(
             List<DataField> keyFields, List<DataField> valueFields) {
-        List<DataField> fields = new ArrayList<>(keyFields.size() + valueFields.size() + 2);
+        List<DataField> fields =
+                new ArrayList<>(keyFields.size() + valueFields.size() + META_FIELD_COUNT);
         fields.addAll(keyFields);
         fields.add(SEQUENCE_NUMBER);
         fields.add(VALUE_KIND);
@@ -149,7 +150,8 @@ public class KeyValue {
 
     public static int[][] project(
             int[][] keyProjection, int[][] valueProjection, int numKeyFields) {
-        int[][] projection = new int[keyProjection.length + 2 + valueProjection.length][];
+        int[][] projection =
+                new int[keyProjection.length + META_FIELD_COUNT + valueProjection.length][];
 
         // key
         for (int i = 0; i < keyProjection.length; i++) {
@@ -157,18 +159,18 @@ public class KeyValue {
             System.arraycopy(keyProjection[i], 0, projection[i], 0, keyProjection[i].length);
         }
 
-        // seq
+        // seq (meta slot 0)
         projection[keyProjection.length] = new int[] {numKeyFields};
 
-        // value kind
+        // value kind (meta slot 1)
         projection[keyProjection.length + 1] = new int[] {numKeyFields + 1};
 
         // value
         for (int i = 0; i < valueProjection.length; i++) {
-            int idx = keyProjection.length + 2 + i;
+            int idx = keyProjection.length + META_FIELD_COUNT + i;
             projection[idx] = new int[valueProjection[i].length];
             System.arraycopy(valueProjection[i], 0, projection[idx], 0, valueProjection[i].length);
-            projection[idx][0] += numKeyFields + 2;
+            projection[idx][0] += numKeyFields + META_FIELD_COUNT;
         }
 
         return projection;

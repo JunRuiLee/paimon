@@ -55,6 +55,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 
+import static org.apache.paimon.KeyValue.META_FIELD_COUNT;
+
 /** A {@link WriteBuffer} which stores records in {@link BinaryInMemorySortBuffer}. */
 public class SortBufferWriteBuffer implements WriteBuffer {
 
@@ -84,7 +86,7 @@ public class SortBufferWriteBuffer implements WriteBuffer {
         if (userDefinedSeqComparator != null) {
             IntStream udsFields =
                     IntStream.of(userDefinedSeqComparator.compareFields())
-                            .map(operand -> operand + keyType.getFieldCount() + 2);
+                            .map(operand -> operand + keyType.getFieldCount() + META_FIELD_COUNT);
             sortFields = IntStream.concat(sortFields, udsFields);
         }
 
@@ -215,7 +217,8 @@ public class SortBufferWriteBuffer implements WriteBuffer {
             this.mergeFunctionWrapper = new ReducerMergeFunctionWrapper(mergeFunction);
             this.requireCopy = mergeFunction.requireCopy();
 
-            int totalFieldCount = keyType.getFieldCount() + 2 + valueType.getFieldCount();
+            int totalFieldCount =
+                    keyType.getFieldCount() + META_FIELD_COUNT + valueType.getFieldCount();
             this.previous = new KeyValueSerializer(keyType, valueType);
             this.previousRow = new BinaryRow(totalFieldCount);
             this.current = new KeyValueSerializer(keyType, valueType);

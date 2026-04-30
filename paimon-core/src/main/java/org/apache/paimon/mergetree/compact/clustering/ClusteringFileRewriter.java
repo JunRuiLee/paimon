@@ -125,7 +125,7 @@ public class ClusteringFileRewriter {
             throws Exception {
         int[] sortFieldsInKeyValue =
                 Arrays.stream(clusteringColumns)
-                        .map(i -> i + keyType.getFieldCount() + 2)
+                        .map(i -> i + keyType.getFieldCount() + KeyValue.META_FIELD_COUNT)
                         .toArray();
         BinaryExternalSortBuffer sortBuffer =
                 BinaryExternalSortBuffer.create(

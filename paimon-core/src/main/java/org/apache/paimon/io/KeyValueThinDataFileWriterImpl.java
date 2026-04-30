@@ -30,7 +30,6 @@ import org.apache.paimon.table.SpecialFields;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.Pair;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
@@ -91,9 +90,8 @@ public class KeyValueThinDataFileWriterImpl extends KeyValueDataFileWriter {
     @Override
     Pair<SimpleColStats[], SimpleColStats[]> fetchKeyValueStats(SimpleColStats[] rowStats) {
         int numKeyFields = keyType.getFieldCount();
-        // In thin mode, there is no key stats in rowStats, so we only jump
-        // _SEQUENCE_NUMBER_ and _ROW_KIND_ stats. Therefore, the 'from' value is 2.
-        SimpleColStats[] valFieldStats = Arrays.copyOfRange(rowStats, 2, rowStats.length);
+        // In thin mode, rowStats does not include key columns — pass numKeyFields=0.
+        SimpleColStats[] valFieldStats = KeyValue.extractValueStats(rowStats, 0);
         // Thin mode on, so need to map value stats to key stats.
         SimpleColStats[] keyStats = new SimpleColStats[numKeyFields];
         for (int i = 0; i < keyStatMapping.length; i++) {

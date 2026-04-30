@@ -43,7 +43,6 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -171,8 +170,8 @@ public class KeyValueClusteringFileWriter
 
         long fileSize = outputBytes();
         SimpleColStats[] rowStats = fieldStats(fileSize);
-        int offset = thinMode ? 2 : keyType.getFieldCount() + 2;
-        SimpleColStats[] valFieldStats = Arrays.copyOfRange(rowStats, offset, rowStats.length);
+        SimpleColStats[] valFieldStats =
+                KeyValue.extractValueStats(rowStats, thinMode ? 0 : keyType.getFieldCount());
         SimpleColStats[] keyColStats = new SimpleColStats[keyType.getFieldCount()];
         for (int i = 0; i < keyStatMapping.length; i++) {
             keyColStats[i] = valFieldStats[keyStatMapping[i]];

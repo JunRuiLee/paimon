@@ -25,6 +25,8 @@ import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.ObjectSerializer;
 
+import static org.apache.paimon.KeyValue.META_FIELD_COUNT;
+
 /** Serialize KeyValue to InternalRow with ignorance of key. Only used to write KeyValue to disk. */
 public class KeyValueThinSerializer extends ObjectSerializer<KeyValue> {
 
@@ -36,7 +38,7 @@ public class KeyValueThinSerializer extends ObjectSerializer<KeyValue> {
     public KeyValueThinSerializer(RowType keyType, RowType valueType) {
         super(KeyValue.schema(keyType, valueType));
 
-        this.reusedMeta = new GenericRow(2);
+        this.reusedMeta = new GenericRow(META_FIELD_COUNT);
         this.reusedKeyWithMeta = new JoinedRow();
     }
 

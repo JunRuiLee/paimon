@@ -24,6 +24,7 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 
+import static org.apache.paimon.KeyValue.META_FIELD_COUNT;
 import static org.apache.paimon.data.JoinedRow.join;
 
 /** Serializer for {@link KeyValue} with Level. */
@@ -54,7 +55,7 @@ public class KeyValueWithLevelNoReusingSerializer extends ObjectSerializer<KeyVa
                         new OffsetRow(keyArity, 0).replace(row),
                         row.getLong(keyArity),
                         RowKind.fromByteValue(row.getByte(keyArity + 1)),
-                        new OffsetRow(valueArity, keyArity + 2).replace(row))
-                .setLevel(row.getInt(keyArity + 2 + valueArity));
+                        new OffsetRow(valueArity, keyArity + META_FIELD_COUNT).replace(row))
+                .setLevel(row.getInt(keyArity + META_FIELD_COUNT + valueArity));
     }
 }

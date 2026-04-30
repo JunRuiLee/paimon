@@ -69,6 +69,6 @@ public class KeyValueDataFileWriterImpl extends KeyValueDataFileWriter {
         int numKeyFields = keyType.getFieldCount();
         return Pair.of(
                 Arrays.copyOfRange(rowStats, 0, numKeyFields),
-                Arrays.copyOfRange(rowStats, numKeyFields + 2, rowStats.length));
+                KeyValue.extractValueStats(rowStats, numKeyFields));
     }
 }

@@ -26,6 +26,8 @@ import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.ObjectSerializer;
 import org.apache.paimon.utils.OffsetRow;
 
+import static org.apache.paimon.KeyValue.META_FIELD_COUNT;
+
 /**
  * Serializer for {@link KeyValue}.
  *
@@ -52,12 +54,12 @@ public class KeyValueSerializer extends ObjectSerializer<KeyValue> {
         this.keyArity = keyType.getFieldCount();
         this.valueArity = valueType.getFieldCount();
 
-        this.reusedMeta = new GenericRow(2);
+        this.reusedMeta = new GenericRow(META_FIELD_COUNT);
         this.reusedKeyWithMeta = new JoinedRow();
         this.reusedRow = new JoinedRow();
 
         this.reusedKey = new OffsetRow(keyArity, 0);
-        this.reusedValue = new OffsetRow(valueArity, keyArity + 2);
+        this.reusedValue = new OffsetRow(valueArity, keyArity + META_FIELD_COUNT);
         this.reusedKv = new KeyValue().replace(reusedKey, -1, null, reusedValue);
     }
 
@@ -94,6 +96,6 @@ public class KeyValueSerializer extends ObjectSerializer<KeyValue> {
                         new OffsetRow(keyArity, 0).replace(row),
                         reusedKv.sequenceNumber(),
                         reusedKv.valueKind(),
-                        new OffsetRow(valueArity, keyArity + 2).replace(row));
+                        new OffsetRow(valueArity, keyArity + META_FIELD_COUNT).replace(row));
     }
 }
