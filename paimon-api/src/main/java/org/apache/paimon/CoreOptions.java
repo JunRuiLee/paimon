@@ -966,6 +966,19 @@ public class CoreOptions implements Serializable {
                     .withDescription("Specify the order of sequence.field.");
 
     @Immutable
+    public static final ConfigOption<Boolean> SNAPSHOT_SEQUENCE_ORDERING =
+            key("sequence.snapshot-ordering")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "When enabled, merge uses snapshot commit order to determine "
+                                    + "which record wins. Records from later snapshots always have higher "
+                                    + "priority. Designed for multi-writer scenarios on the same primary "
+                                    + "key table. Once set, this option cannot be toggled — enabling or "
+                                    + "disabling it after data has been written would produce inconsistent "
+                                    + "merge semantics.");
+
+    @Immutable
     public static final ConfigOption<Boolean> AGGREGATION_REMOVE_RECORD_ON_DELETE =
             key("aggregation.remove-record-on-delete")
                     .booleanType()
@@ -3274,6 +3287,10 @@ public class CoreOptions implements Serializable {
                                         .map(String::trim)
                                         .collect(Collectors.toList()))
                 .orElse(Collections.emptyList());
+    }
+
+    public boolean snapshotSequenceOrdering() {
+        return options.get(SNAPSHOT_SEQUENCE_ORDERING);
     }
 
     public static List<String> blobField(Map<String, String> options) {

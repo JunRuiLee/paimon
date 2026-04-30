@@ -79,7 +79,7 @@ public class MergeSorter {
         this.sortEngine = options.sortEngine();
         this.spillThreshold = options.sortSpillThreshold();
         this.compression = options.spillCompressOptions();
-        this.snapshotSequenceOrdering = false;
+        this.snapshotSequenceOrdering = options.snapshotSequenceOrdering();
         this.keyType = keyType;
         this.valueType = valueType;
         this.memoryPool =

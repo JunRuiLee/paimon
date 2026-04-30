@@ -209,7 +209,7 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 options.changelogProducer(),
                 restoreIncrement,
                 UserDefinedSeqComparator.create(valueType, options),
-                false);
+                options.snapshotSequenceOrdering());
     }
 
     @Override

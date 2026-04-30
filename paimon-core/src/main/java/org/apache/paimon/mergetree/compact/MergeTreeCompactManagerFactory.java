@@ -254,7 +254,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                     mfFactory,
                     mergeSorter,
                     logDedupEqualSupplier.get(),
-                    false);
+                    options.snapshotSequenceOrdering());
         } else if (lookupStrategy.needLookup) {
             PersistProcessor.Factory<?> processorFactory;
             LookupMergeTreeCompactRewriter.MergeFunctionWrapperFactory<?> wrapperFactory;
@@ -288,7 +288,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                                 logDedupEqualSupplier.get(),
                                 lookupStrategy,
                                 UserDefinedSeqComparator.create(valueType, options),
-                                false);
+                                options.snapshotSequenceOrdering());
             }
             LookupLevels<?> lookupLevels =
                     createLookupLevels(
@@ -326,7 +326,7 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                     userDefinedSeqComparator,
                     mfFactory,
                     mergeSorter,
-                    false);
+                    options.snapshotSequenceOrdering());
         }
     }
 

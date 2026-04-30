@@ -266,6 +266,23 @@ public class SchemaValidation {
                 fieldNamesSpecifiedAsVector.isEmpty(),
                 "Some of the columns specified as vector-field are unknown.");
 
+        if (options.snapshotSequenceOrdering()) {
+            checkArgument(
+                    !schema.primaryKeys().isEmpty(),
+                    "sequence.snapshot-ordering requires a primary key table.");
+            checkArgument(
+                    options.sequenceField().isEmpty(),
+                    "sequence.snapshot-ordering cannot be used together with sequence.field. "
+                            + "Snapshot ordering determines record precedence by commit order; "
+                            + "sequence.field would override this behavior.");
+            checkArgument(
+                    options.mergeEngine() == MergeEngine.DEDUPLICATE,
+                    "sequence.snapshot-ordering only supports merge-engine=deduplicate, got %s. "
+                            + "Partial-update / aggregation / first-row have merge semantics that "
+                            + "conflict with snapshot-based record precedence.",
+                    options.mergeEngine());
+        }
+
         validateMergeFunctionFactory(schema);
 
         validateRowTracking(schema, options);
