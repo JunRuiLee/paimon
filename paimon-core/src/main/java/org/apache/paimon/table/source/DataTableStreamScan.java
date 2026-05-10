@@ -95,6 +95,11 @@ public class DataTableStreamScan extends AbstractDataTableScan implements Stream
                         snapshotManager, changelogManager, options.changelogLifecycleDecoupled());
         this.hasPk = hasPk;
 
+        if (options.scanReadModeFreshness()) {
+            throw new UnsupportedOperationException(
+                    "'scan.read-mode' = 'freshness' is only supported for batch reads.");
+        }
+
         if (options.bucket() == BucketMode.POSTPONE_BUCKET
                 && options.changelogProducer() != CoreOptions.ChangelogProducer.NONE) {
             snapshotReader.onlyReadRealBuckets();

@@ -61,6 +61,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     private final SimpleStatsEvolutions fieldValueStatsConverters;
     private final BucketSelectConverter bucketSelectConverter;
     private final boolean deletionVectorsEnabled;
+    private final boolean scanReadModeFreshness;
     private final MergeEngine mergeEngine;
     private final ChangelogProducer changelogProducer;
     private final boolean fileIndexReadEnabled;
@@ -88,6 +89,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
             ManifestFile.Factory manifestFileFactory,
             Integer scanManifestParallelism,
             boolean deletionVectorsEnabled,
+            boolean scanReadModeFreshness,
             MergeEngine mergeEngine,
             ChangelogProducer changelogProducer,
             boolean fileIndexReadEnabled) {
@@ -109,6 +111,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
                         sid -> keyValueFieldsExtractor.valueFields(scanTableSchema(sid)),
                         schema.id());
         this.deletionVectorsEnabled = deletionVectorsEnabled;
+        this.scanReadModeFreshness = scanReadModeFreshness;
         this.mergeEngine = mergeEngine;
         this.changelogProducer = changelogProducer;
         this.fileIndexReadEnabled = fileIndexReadEnabled;
@@ -216,7 +219,7 @@ public class KeyValueFileStoreScan extends AbstractFileStoreScan {
     }
 
     private boolean wholeBucketFilterEnabled() {
-        return valueFilter != null && scanMode == ScanMode.ALL;
+        return valueFilter != null && scanMode == ScanMode.ALL && !scanReadModeFreshness;
     }
 
     @VisibleForTesting

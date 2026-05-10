@@ -1260,6 +1260,12 @@ This config option does not affect the default filesystem metastore.</td>
             <td>When a batch job queries from a table, if a partition exists in the primary branch, the reader will read this partition from the primary branch. Otherwise, the reader will read this partition from the current branch.</td>
         </tr>
         <tr>
+            <td><h5>scan.read-mode</h5></td>
+            <td style="word-wrap: break-word;">performance</td>
+            <td><p>Enum</p></td>
+            <td>Controls read mode for primary key tables that skip level-0 files (deletion-vectors or first-row merge engine). 'performance' (default) skips uncompacted level-0 files for best read performance. 'freshness' includes level-0 files via merge-on-read for maximum data freshness, at the cost of additional merge overhead during reads. Only effective for batch reads.<br /><br />Possible values:<ul><li>"performance": Only read compacted data (levels &gt; 0). Best read performance.</li><li>"freshness": Read all data including uncompacted level-0 files. Best data freshness, with additional merge overhead.</li></ul></td>
+        </tr>
+        <tr>
             <td><h5>scan.snapshot-id</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Long</td>

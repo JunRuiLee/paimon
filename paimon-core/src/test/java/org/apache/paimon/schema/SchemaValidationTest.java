@@ -369,4 +369,88 @@ class SchemaValidationTest {
                                                 "")))
                 .hasMessageContaining("primary-key");
     }
+
+    @Test
+    void testReadModeFreshnessRequiresDvOrFirstRow() {
+        // non-PK table
+        Map<String, String> options1 = new HashMap<>();
+        options1.put(CoreOptions.SCAN_READ_MODE.key(), "freshness");
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.INT()));
+        assertThatThrownBy(
+                        () ->
+                                validateTableSchema(
+                                        new TableSchema(
+                                                1,
+                                                fields,
+                                                10,
+                                                emptyList(),
+                                                emptyList(),
+                                                options1,
+                                                "")))
+                .hasMessageContaining("'scan.read-mode' = 'freshness'");
+
+        // PK table without DV or first-row
+        Map<String, String> options2 = new HashMap<>();
+        options2.put(CoreOptions.SCAN_READ_MODE.key(), "freshness");
+        options2.put(BUCKET.key(), "1");
+        assertThatThrownBy(
+                        () ->
+                                validateTableSchema(
+                                        new TableSchema(
+                                                1,
+                                                fields,
+                                                10,
+                                                emptyList(),
+                                                singletonList("f0"),
+                                                options2,
+                                                "")))
+                .hasMessageContaining("'scan.read-mode' = 'freshness'");
+    }
+
+    @Test
+    void testReadModeFreshnessValidWithDvOrFirstRow() {
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.INT()));
+
+        // PK table with DV
+        Map<String, String> options1 = new HashMap<>();
+        options1.put(CoreOptions.SCAN_READ_MODE.key(), "freshness");
+        options1.put(CoreOptions.DELETION_VECTORS_ENABLED.key(), "true");
+        options1.put(BUCKET.key(), "1");
+        assertThatNoException()
+                .isThrownBy(
+                        () ->
+                                validateTableSchema(
+                                        new TableSchema(
+                                                1,
+                                                fields,
+                                                10,
+                                                emptyList(),
+                                                singletonList("f0"),
+                                                options1,
+                                                "")));
+
+        // PK table with first-row
+        Map<String, String> options2 = new HashMap<>();
+        options2.put(CoreOptions.SCAN_READ_MODE.key(), "freshness");
+        options2.put(CoreOptions.MERGE_ENGINE.key(), "first-row");
+        options2.put(BUCKET.key(), "1");
+        assertThatNoException()
+                .isThrownBy(
+                        () ->
+                                validateTableSchema(
+                                        new TableSchema(
+                                                1,
+                                                fields,
+                                                10,
+                                                emptyList(),
+                                                singletonList("f0"),
+                                                options2,
+                                                "")));
+    }
 }

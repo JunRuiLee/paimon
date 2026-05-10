@@ -254,6 +254,15 @@ public class SchemaValidation {
             validateForDeletionVectors(options);
         }
 
+        if (options.scanReadModeFreshness()) {
+            checkArgument(
+                    !schema.primaryKeys().isEmpty()
+                            && (options.deletionVectorsEnabled()
+                                    || options.mergeEngine() == MergeEngine.FIRST_ROW),
+                    "'scan.read-mode' = 'freshness' is only supported for primary key tables "
+                            + "with deletion-vectors enabled or first-row merge engine.");
+        }
+
         // vector field names must point to vector type
         Set<String> fieldNamesSpecifiedAsVector = options.vectorField();
         schema.fields()

@@ -1872,6 +1872,17 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "Enable 64 bit bitmap implementation. Note that only 64 bit bitmap implementation is compatible with Iceberg.");
 
+    public static final ConfigOption<ReadMode> SCAN_READ_MODE =
+            key("scan.read-mode")
+                    .enumType(ReadMode.class)
+                    .defaultValue(ReadMode.PERFORMANCE)
+                    .withDescription(
+                            "Controls read mode for primary key tables "
+                                    + "that skip level-0 files (deletion-vectors or first-row merge engine). "
+                                    + "'performance' (default) skips uncompacted level-0 files for best read performance. "
+                                    + "'freshness' includes level-0 files via merge-on-read for maximum data freshness, "
+                                    + "at the cost of additional merge overhead during reads. Only effective for batch reads.");
+
     public static final ConfigOption<Boolean> DELETION_FORCE_PRODUCE_CHANGELOG =
             key("delete.force-produce-changelog")
                     .booleanType()
@@ -3606,6 +3617,14 @@ public class CoreOptions implements Serializable {
         return deletionVectorsEnabled() || mergeEngine() == FIRST_ROW;
     }
 
+    public ReadMode scanReadMode() {
+        return options.get(SCAN_READ_MODE);
+    }
+
+    public boolean scanReadModeFreshness() {
+        return scanReadMode() == ReadMode.FRESHNESS;
+    }
+
     public MemorySize dvIndexFileTargetSize() {
         return options.get(DELETION_VECTOR_INDEX_FILE_TARGET_SIZE);
     }
@@ -4574,5 +4593,32 @@ public class CoreOptions implements Serializable {
 
         /** Drop all global index entries for the whole partitions affected by the update. */
         DROP_PARTITION_INDEX
+    }
+
+    /** Controls read mode for primary key tables: optimize for performance or data freshness. */
+    public enum ReadMode implements DescribedEnum {
+        PERFORMANCE("performance", "Only read compacted data (levels > 0). Best read performance."),
+
+        FRESHNESS(
+                "freshness",
+                "Read all data including uncompacted level-0 files. Best data freshness, with additional merge overhead.");
+
+        private final String value;
+        private final String description;
+
+        ReadMode(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
     }
 }

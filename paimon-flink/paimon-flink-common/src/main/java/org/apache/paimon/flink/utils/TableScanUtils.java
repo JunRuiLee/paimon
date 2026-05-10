@@ -63,6 +63,11 @@ public class TableScanUtils {
                             + SCAN_DEDICATED_SPLIT_GENERATION.key()
                             + " can only used in batch mode.");
         }
+
+        if (coreOptions.scanReadModeFreshness()) {
+            throw new UnsupportedOperationException(
+                    "'scan.read-mode' = 'freshness' is only supported for batch reads.");
+        }
     }
 
     /** Get snapshot id from {@link FileStoreSourceSplit}. */

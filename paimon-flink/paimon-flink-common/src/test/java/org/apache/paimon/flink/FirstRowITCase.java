@@ -130,4 +130,25 @@ public class FirstRowITCase extends CatalogITCaseBase {
 
         assertThat(result).containsExactly(Row.ofKind(RowKind.INSERT, 1, 1, "1"));
     }
+
+    @Test
+    public void testFreshnessModeBatchRead() {
+        sql(
+                "CREATE TABLE T_FRESH (a INT, b INT, c STRING, PRIMARY KEY (a) NOT ENFORCED)"
+                        + " WITH ('merge-engine'='first-row', 'scan.read-mode' = 'freshness')");
+
+        // write-only to keep data in L0
+        batchSql(
+                "INSERT INTO T_FRESH /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 1, '1'), (2, 2, '2')");
+        batchSql(
+                "INSERT INTO T_FRESH /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 9, '9'), (3, 3, '3')");
+
+        // L0 data should be visible; first-row dedup keeps (1,1,'1') over (1,9,'9')
+        List<Row> result = batchSql("SELECT * FROM T_FRESH");
+        assertThat(result)
+                .containsExactlyInAnyOrder(
+                        Row.ofKind(RowKind.INSERT, 1, 1, "1"),
+                        Row.ofKind(RowKind.INSERT, 2, 2, "2"),
+                        Row.ofKind(RowKind.INSERT, 3, 3, "3"));
+    }
 }

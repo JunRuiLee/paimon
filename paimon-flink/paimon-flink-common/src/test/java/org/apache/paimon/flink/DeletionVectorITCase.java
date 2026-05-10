@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.stream.Stream;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
 
 /** ITCase for deletion vector table. */
@@ -529,5 +530,109 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
                         Row.of(3, "33", "dt"),
                         Row.of(4, "44", "dt"),
                         Row.of(5, "55", "dt"));
+    }
+
+    @Test
+    public void testFreshnessModeBatchRead() {
+        sql(
+                "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
+                        + "WITH ('deletion-vectors.enabled' = 'true', "
+                        + "'scan.read-mode' = 'freshness')");
+
+        // write-only to avoid compaction, keeping data in L0
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 'a'), (2, 'b')");
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (3, 'c'), (4, 'd')");
+
+        // without freshness=all, these L0 files would be invisible in batch read
+        assertThat(batchSql("SELECT * FROM T"))
+                .containsExactlyInAnyOrder(
+                        Row.of(1, "a"), Row.of(2, "b"), Row.of(3, "c"), Row.of(4, "d"));
+    }
+
+    @Test
+    public void testFreshnessModeMergeDedup() {
+        sql(
+                "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
+                        + "WITH ('deletion-vectors.enabled' = 'true', "
+                        + "'scan.read-mode' = 'freshness')");
+
+        // write same keys multiple times with write-only to create overlapping L0
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 'v1'), (2, 'v1')");
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 'v2'), (2, 'v2')");
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 'v3'), (2, 'v3')");
+
+        // each PK should appear exactly once with the latest value
+        assertThat(batchSql("SELECT * FROM T"))
+                .containsExactlyInAnyOrder(Row.of(1, "v3"), Row.of(2, "v3"));
+    }
+
+    @Test
+    public void testFreshnessModeBatchWithPredicate() {
+        sql(
+                "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, v INT) "
+                        + "WITH ('deletion-vectors.enabled' = 'true', "
+                        + "'scan.read-mode' = 'freshness')");
+
+        // write overlapping data via write-only
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 10), (2, 20), (3, 30)");
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 100), (2, 5)");
+
+        // predicate on value column: after merge, id=1->100, id=2->5, id=3->30
+        assertThat(batchSql("SELECT * FROM T WHERE v > 15"))
+                .containsExactlyInAnyOrder(Row.of(1, 100), Row.of(3, 30));
+    }
+
+    @Test
+    public void testFreshnessModeFirstRowWithPredicate() {
+        sql(
+                "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, v INT) "
+                        + "WITH ('merge-engine' = 'first-row', "
+                        + "'scan.read-mode' = 'freshness')");
+
+        // First write lands in L0, these are the "first rows" that should win
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 10), (2, 20)");
+        // Second write: same keys with different values, but first-row keeps old values
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 100), (2, 5)");
+
+        // first-row: id=1->10 (first write wins), id=2->20 (first write wins)
+        // WHERE v > 15: only id=2 (v=20) satisfies
+        assertThat(batchSql("SELECT * FROM T WHERE v > 15"))
+                .containsExactlyInAnyOrder(Row.of(2, 20));
+    }
+
+    @Test
+    public void testFreshnessModeAggregateWithPredicate() {
+        sql(
+                "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, v INT) "
+                        + "WITH ('deletion-vectors.enabled' = 'true', "
+                        + "'merge-engine' = 'aggregation', "
+                        + "'fields.v.aggregate-function' = 'sum', "
+                        + "'scan.read-mode' = 'freshness')");
+
+        // Two writes, sum should aggregate
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 10), (2, 8)");
+        sql("INSERT INTO T /*+ OPTIONS('write-only' = 'true') */ VALUES (1, 10), (2, 8)");
+
+        // After aggregation: id=1->20, id=2->16
+        assertThat(batchSql("SELECT * FROM T"))
+                .containsExactlyInAnyOrder(Row.of(1, 20), Row.of(2, 16));
+        // WHERE v > 15: both satisfy
+        assertThat(batchSql("SELECT * FROM T WHERE v > 15"))
+                .containsExactlyInAnyOrder(Row.of(1, 20), Row.of(2, 16));
+    }
+
+    @Test
+    public void testFreshnessModeStreamingNotSupported() {
+        sql(
+                "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
+                        + "WITH ('deletion-vectors.enabled' = 'true', "
+                        + "'scan.read-mode' = 'freshness')");
+
+        assertThatThrownBy(
+                        () ->
+                                streamSqlBlockIter(
+                                        "SELECT * FROM T /*+ OPTIONS('scan.mode'='latest') */"))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("'scan.read-mode' = 'freshness'");
     }
 }

@@ -64,10 +64,12 @@ public class DataTableBatchScan extends AbstractDataTableScan {
 
         this.hasNext = true;
         this.schemaManager = schemaManager;
-        if (!schema.primaryKeys().isEmpty() && options.batchScanSkipLevel0()) {
-            if (options.toConfiguration()
-                    .get(CoreOptions.BATCH_SCAN_MODE)
-                    .equals(CoreOptions.BatchScanMode.NONE)) {
+        if (!schema.primaryKeys().isEmpty()
+                && options.batchScanSkipLevel0()
+                && options.toConfiguration()
+                        .get(CoreOptions.BATCH_SCAN_MODE)
+                        .equals(CoreOptions.BatchScanMode.NONE)) {
+            if (!options.scanReadModeFreshness()) {
                 snapshotReader.withLevelFilter(level -> level > 0).enableValueFilter();
             }
         }
