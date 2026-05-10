@@ -88,7 +88,8 @@ public class LookupMergeTreeCompactRewriter<T> extends ChangelogMergeTreeRewrite
                 mfFactory,
                 mergeSorter,
                 produceChangelog,
-                dvMaintainer != null);
+                dvMaintainer != null,
+                options.snapshotSequenceOrdering());
         this.dvMaintainer = dvMaintainer;
         this.lookupLevels = lookupLevels;
         this.wrapperFactory = wrapperFactory;

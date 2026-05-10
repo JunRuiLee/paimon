@@ -40,6 +40,7 @@ import org.apache.paimon.utils.IOUtils;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -52,6 +53,7 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
     @Nullable protected final FieldsComparator userDefinedSeqComparator;
     protected final MergeFunctionFactory<KeyValue> mfFactory;
     protected final MergeSorter mergeSorter;
+    protected final boolean snapshotSequenceOrdering;
     @Nullable private CompactionMetrics.Reporter metricsReporter;
 
     public MergeTreeCompactRewriter(
@@ -60,13 +62,15 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
             Comparator<InternalRow> keyComparator,
             @Nullable FieldsComparator userDefinedSeqComparator,
             MergeFunctionFactory<KeyValue> mfFactory,
-            MergeSorter mergeSorter) {
+            MergeSorter mergeSorter,
+            boolean snapshotSequenceOrdering) {
         this.readerFactory = readerFactory;
         this.writerFactory = writerFactory;
         this.keyComparator = keyComparator;
         this.userDefinedSeqComparator = userDefinedSeqComparator;
         this.mfFactory = mfFactory;
         this.mergeSorter = mergeSorter;
+        this.snapshotSequenceOrdering = snapshotSequenceOrdering;
     }
 
     @Override
@@ -107,6 +111,7 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
         List<DataFileMeta> before = extractFilesFromSections(sections);
         notifyRewriteCompactBefore(before);
         List<DataFileMeta> after = writer.result();
+        after = preAssignCommitSnapshotId(after, sections);
         after = notifyRewriteCompactAfter(after);
         if (metricsReporter != null) {
             metricsReporter.reportSortBufferMetrics(
@@ -131,6 +136,51 @@ public class MergeTreeCompactRewriter extends AbstractCompactRewriter {
 
     protected List<DataFileMeta> notifyRewriteCompactAfter(List<DataFileMeta> files) {
         return files;
+    }
+
+    /**
+     * When snapshot-ordering is enabled, propagate the maximum stamped commit-snapshot-id of the
+     * input files to the rewritten outputs. This allows dedicated-compaction jobs (which see the
+     * inputs already stamped at write time) to keep merge tiebreaks correct without depending on
+     * which snapshot id is assigned at commit. If any input is unstamped (e.g. data written before
+     * the option was enabled) we leave the outputs unstamped so commit-time stamping kicks in.
+     *
+     * <p>Correctness relies on the merge-tree invariant that each compaction section contains
+     * <b>all</b> sorted runs whose key ranges overlap. This guarantees that for every key in the
+     * output, the merge has already resolved all conflicting versions, so the max stamp accurately
+     * represents the "winning" snapshot. If a partial compaction were to skip a sorted run
+     * containing the same key, the elevated stamp could incorrectly shadow a newer version of that
+     * key.
+     */
+    protected List<DataFileMeta> preAssignCommitSnapshotId(
+            List<DataFileMeta> outputFiles, List<List<SortedRun>> sections) {
+        if (!snapshotSequenceOrdering) {
+            return outputFiles;
+        }
+        long maxSnapshotId = Long.MIN_VALUE;
+        boolean foundStamped = false;
+        for (List<SortedRun> runs : sections) {
+            for (SortedRun run : runs) {
+                for (DataFileMeta file : run.files()) {
+                    Long id = file.commitSnapshotId();
+                    if (id == null) {
+                        return outputFiles;
+                    }
+                    foundStamped = true;
+                    if (id > maxSnapshotId) {
+                        maxSnapshotId = id;
+                    }
+                }
+            }
+        }
+        if (!foundStamped) {
+            return outputFiles;
+        }
+        List<DataFileMeta> result = new ArrayList<>(outputFiles.size());
+        for (DataFileMeta file : outputFiles) {
+            result.add(file.assignCommitSnapshotId(maxSnapshotId));
+        }
+        return result;
     }
 
     public void setMetricsReporter(@Nullable CompactionMetrics.Reporter reporter) {

@@ -36,12 +36,23 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
     private final FileRecordReader<InternalRow> reader;
     private final KeyValueSerializer serializer;
     private final int level;
+    private final long snapshotId;
 
     public KeyValueDataFileRecordReader(
             FileRecordReader<InternalRow> reader, RowType keyType, RowType valueType, int level) {
+        this(reader, keyType, valueType, level, KeyValue.UNKNOWN_SNAPSHOT_ID);
+    }
+
+    public KeyValueDataFileRecordReader(
+            FileRecordReader<InternalRow> reader,
+            RowType keyType,
+            RowType valueType,
+            int level,
+            long snapshotId) {
         this.reader = reader;
         this.serializer = new KeyValueSerializer(keyType, valueType);
         this.level = level;
+        this.snapshotId = snapshotId;
     }
 
     @Nullable
@@ -56,7 +67,10 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
                 internalRow ->
                         internalRow == null
                                 ? null
-                                : serializer.fromRow(internalRow).setLevel(level));
+                                : serializer
+                                        .fromRow(internalRow)
+                                        .setLevel(level)
+                                        .setSnapshotId(snapshotId));
     }
 
     @Override

@@ -932,6 +932,13 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                 deltaFiles = assigned.assignedEntries;
             }
 
+            if (options.snapshotSequenceOrdering()) {
+                deltaFiles = assignCommitSnapshotId(newSnapshotId, deltaFiles);
+                if (!changelogFiles.isEmpty()) {
+                    changelogFiles = assignCommitSnapshotId(newSnapshotId, changelogFiles);
+                }
+            }
+
             // the added records subtract the deleted records from
             long deltaRecordCount = recordCountAdd(deltaFiles) - recordCountDelete(deltaFiles);
             long totalRecordCount = previousTotalRecordCount + deltaRecordCount;
@@ -1191,5 +1198,23 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         IOUtils.closeAllQuietly(commitPreCallbacks);
         IOUtils.closeAllQuietly(commitCallbacks);
         IOUtils.closeQuietly(snapshotCommit);
+    }
+
+    /**
+     * Stamp ADD-kind manifest entries with the new snapshot id, leaving any pre-stamped files (from
+     * compaction rewriters in dedicated-compaction jobs) untouched. DELETE entries refer to
+     * existing files and must keep their original stamp.
+     */
+    private static List<ManifestEntry> assignCommitSnapshotId(
+            long snapshotId, List<ManifestEntry> files) {
+        List<ManifestEntry> result = new ArrayList<>(files.size());
+        for (ManifestEntry entry : files) {
+            if (entry.kind() == FileKind.ADD && entry.file().commitSnapshotId() == null) {
+                result.add(entry.assignCommitSnapshotId(snapshotId));
+            } else {
+                result.add(entry);
+            }
+        }
+        return result;
     }
 }
