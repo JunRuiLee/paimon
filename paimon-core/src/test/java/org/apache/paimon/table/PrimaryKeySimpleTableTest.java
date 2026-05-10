@@ -437,6 +437,61 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
     }
 
     @Test
+    public void testSnapshotSequenceOrdering() throws Exception {
+        // End-to-end check that with sequence.snapshot-ordering = true the record committed in
+        // the LATER snapshot wins on a primary-key conflict, even when its in-row sequence number
+        // is smaller than the earlier-committed one. Without snapshot-ordering the second commit
+        // (sequence 1) would lose to the first commit (sequence 100); with it, the second commit
+        // wins because snapshot id is the primary tiebreaker.
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> conf.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // First commit: pk=(1,10), value b=999, will end up with a high sequence number.
+        for (int i = 0; i < 100; i++) {
+            write.write(rowData(1, 10, 999L));
+        }
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        // Second commit: pk=(1,10), value b=1, only one row → low sequence number, but later
+        // snapshot.
+        write.write(rowData(1, 10, 1L));
+        commit.commit(1, write.prepareCommit(true, 1));
+
+        write.close();
+        commit.close();
+
+        List<Split> splits = table.newSnapshotReader().read().splits();
+        assertThat(getResult(table.newRead(), splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .containsExactly("1|10|1|binary|varbinary|mapKey:mapVal|multiset");
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingFallsBackToSequenceWithinSnapshot() throws Exception {
+        // Within a single commit there is no snapshot-id distinction, so the sequence number
+        // continues to act as the tiebreaker. This protects users who rely on intra-snapshot
+        // ordering (e.g. a writer that emits a row twice in the same checkpoint).
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> conf.set(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING, true));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        write.write(rowData(1, 10, 1L));
+        write.write(rowData(1, 10, 999L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        write.close();
+        commit.close();
+
+        List<Split> splits = table.newSnapshotReader().read().splits();
+        assertThat(getResult(table.newRead(), splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .containsExactly("1|10|999|binary|varbinary|mapKey:mapVal|multiset");
+    }
+
+    @Test
     public void testBatchReadWrite() throws Exception {
         writeData();
         FileStoreTable table = createFileStoreTable();

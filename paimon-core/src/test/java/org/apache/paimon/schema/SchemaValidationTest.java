@@ -369,4 +369,45 @@ class SchemaValidationTest {
                                                 "")))
                 .hasMessageContaining("primary-key");
     }
+
+    @Test
+    void testSnapshotSequenceOrderingHappyPath() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING.key(), "true");
+        assertThatNoException().isThrownBy(() -> validateTableSchemaExec(options));
+    }
+
+    @Test
+    void testSnapshotSequenceOrderingRejectsSequenceField() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING.key(), "true");
+        options.put(CoreOptions.SEQUENCE_FIELD.key(), "f2");
+        assertThatThrownBy(() -> validateTableSchemaExec(options))
+                .hasMessageContaining(CoreOptions.SEQUENCE_FIELD.key());
+    }
+
+    @Test
+    void testSnapshotSequenceOrderingRejectsNonPkTable() {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.SNAPSHOT_SEQUENCE_ORDERING.key(), "true");
+
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "f0", DataTypes.INT()),
+                        new DataField(1, "f1", DataTypes.INT()),
+                        new DataField(2, "f2", DataTypes.STRING()));
+        options.put(BUCKET.key(), String.valueOf(-1));
+        assertThatThrownBy(
+                        () ->
+                                validateTableSchema(
+                                        new TableSchema(
+                                                1,
+                                                fields,
+                                                10,
+                                                emptyList(),
+                                                emptyList(),
+                                                options,
+                                                "")))
+                .hasMessageContaining("primary-key");
+    }
 }
