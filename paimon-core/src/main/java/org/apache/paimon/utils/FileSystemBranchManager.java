@@ -19,18 +19,37 @@
 package org.apache.paimon.utils;
 
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.io.CompactIncrement;
+import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.io.DataIncrement;
+import org.apache.paimon.manifest.FileEntry;
+import org.apache.paimon.manifest.FileKind;
+import org.apache.paimon.manifest.ManifestCommittable;
+import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.manifest.ManifestFile;
+import org.apache.paimon.manifest.ManifestList;
+import org.apache.paimon.operation.FileStoreCommit;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.CommitMessageImpl;
 import org.apache.paimon.tag.Tag;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -47,18 +66,21 @@ public class FileSystemBranchManager implements BranchManager {
     private final SnapshotManager snapshotManager;
     private final TagManager tagManager;
     private final SchemaManager schemaManager;
+    private final FileStoreTable table;
 
     public FileSystemBranchManager(
             FileIO fileIO,
             Path path,
             SnapshotManager snapshotManager,
             TagManager tagManager,
-            SchemaManager schemaManager) {
+            SchemaManager schemaManager,
+            FileStoreTable table) {
         this.fileIO = fileIO;
         this.tablePath = path;
         this.snapshotManager = snapshotManager;
         this.tagManager = tagManager;
         this.schemaManager = schemaManager;
+        this.table = table;
     }
 
     /** Return the root Directory of branch. */
@@ -207,6 +229,155 @@ public class FileSystemBranchManager implements BranchManager {
                             "Exception occurs when fast forward '%s' (directory in %s).",
                             branchName, BranchManager.branchPath(tablePath, branchName)),
                     e);
+        }
+    }
+
+    @Override
+    public void merge(String sourceBranch, String targetBranch) {
+        BranchManager.mergeValidate(sourceBranch, targetBranch);
+        validateMergeBranches(sourceBranch, targetBranch);
+
+        FileStoreTable sourceTable = table.switchToBranch(sourceBranch);
+        FileStoreTable targetTable = table.switchToBranch(targetBranch);
+
+        validateMergeSchema(sourceBranch, targetBranch);
+        validateAppendOnly(sourceTable, sourceBranch);
+
+        Snapshot sourceSnapshot = sourceTable.snapshotManager().latestSnapshot();
+        List<ManifestEntry> filesToMerge =
+                computeMergeDiff(
+                        sourceTable, sourceSnapshot, targetTable, sourceBranch, targetBranch);
+        if (filesToMerge.isEmpty()) {
+            return;
+        }
+
+        commitMerge(targetTable, filesToMerge);
+    }
+
+    private void validateMergeBranches(String sourceBranch, String targetBranch) {
+        if (!BranchManager.isMainBranch(sourceBranch)) {
+            checkArgument(
+                    branchExists(sourceBranch), "Branch name '%s' doesn't exist.", sourceBranch);
+        }
+        if (!BranchManager.isMainBranch(targetBranch)) {
+            checkArgument(
+                    branchExists(targetBranch), "Branch name '%s' doesn't exist.", targetBranch);
+        }
+
+        SnapshotManager sourceSm = snapshotManager.copyWithBranch(sourceBranch);
+        checkArgument(
+                sourceSm.latestSnapshotId() != null,
+                "Cannot merge branch '%s', because it does not have snapshot.",
+                sourceBranch);
+
+        SnapshotManager targetSm = snapshotManager.copyWithBranch(targetBranch);
+        checkArgument(
+                targetSm.latestSnapshotId() != null,
+                "Cannot merge into branch '%s', because it does not have snapshot.",
+                targetBranch);
+    }
+
+    private void validateMergeSchema(String sourceBranch, String targetBranch) {
+        SchemaManager sourceSchemaMgr = new SchemaManager(fileIO, tablePath, sourceBranch);
+        SchemaManager targetSchemaMgr = new SchemaManager(fileIO, tablePath, targetBranch);
+        TableSchema sourceSchema = sourceSchemaMgr.latest().get();
+        TableSchema targetSchema = targetSchemaMgr.latest().get();
+        checkArgument(
+                sourceSchema.fields().equals(targetSchema.fields()),
+                "Cannot merge branch '%s' into '%s', schema mismatch.",
+                sourceBranch,
+                targetBranch);
+    }
+
+    private void validateAppendOnly(FileStoreTable sourceTable, String sourceBranch) {
+        checkArgument(
+                sourceTable.schema().primaryKeys().isEmpty(),
+                "Branch merge is only supported for append-only tables, "
+                        + "but branch '%s' has primary keys.",
+                sourceBranch);
+    }
+
+    private void validateNoCompaction(
+            Map<FileEntry.Identifier, ManifestEntry> files, String branchName) {
+        for (ManifestEntry entry : files.values()) {
+            checkArgument(
+                    entry.file().level() == 0,
+                    "Cannot merge branch '%s', because it contains compacted files (level > 0).",
+                    branchName);
+        }
+    }
+
+    private List<ManifestEntry> computeMergeDiff(
+            FileStoreTable sourceTable,
+            Snapshot sourceSnapshot,
+            FileStoreTable targetTable,
+            String sourceBranch,
+            String targetBranch) {
+        Snapshot targetSnapshot = targetTable.snapshotManager().latestSnapshot();
+
+        ManifestList sourceManifestList = sourceTable.store().manifestListFactory().create();
+        ManifestFile sourceManifestFile = sourceTable.store().manifestFileFactory().create();
+        Map<FileEntry.Identifier, ManifestEntry> sourceFiles = new LinkedHashMap<>();
+        FileEntry.mergeEntries(
+                sourceManifestFile,
+                sourceManifestList.readDataManifests(sourceSnapshot),
+                sourceFiles,
+                null);
+
+        ManifestList targetManifestList = targetTable.store().manifestListFactory().create();
+        ManifestFile targetManifestFile = targetTable.store().manifestFileFactory().create();
+        Map<FileEntry.Identifier, ManifestEntry> targetFiles = new LinkedHashMap<>();
+        FileEntry.mergeEntries(
+                targetManifestFile,
+                targetManifestList.readDataManifests(targetSnapshot),
+                targetFiles,
+                null);
+
+        validateNoCompaction(sourceFiles, sourceBranch);
+        validateNoCompaction(targetFiles, targetBranch);
+
+        List<ManifestEntry> filesToMerge = new ArrayList<>();
+        for (Map.Entry<FileEntry.Identifier, ManifestEntry> entry : sourceFiles.entrySet()) {
+            if (!targetFiles.containsKey(entry.getKey())) {
+                ManifestEntry manifestEntry = entry.getValue();
+                if (manifestEntry.kind() == FileKind.ADD) {
+                    filesToMerge.add(manifestEntry);
+                }
+            }
+        }
+        return filesToMerge;
+    }
+
+    private void commitMerge(FileStoreTable targetTable, List<ManifestEntry> filesToMerge) {
+        Map<BinaryRow, Map<Integer, List<DataFileMeta>>> grouped = new HashMap<>();
+        for (ManifestEntry entry : filesToMerge) {
+            grouped.computeIfAbsent(entry.partition(), k -> new HashMap<>())
+                    .computeIfAbsent(entry.bucket(), k -> new ArrayList<>())
+                    .add(entry.file());
+        }
+
+        String commitUser = UUID.randomUUID().toString();
+        ManifestCommittable committable = new ManifestCommittable(0);
+        for (Map.Entry<BinaryRow, Map<Integer, List<DataFileMeta>>> partEntry :
+                grouped.entrySet()) {
+            for (Map.Entry<Integer, List<DataFileMeta>> bucketEntry :
+                    partEntry.getValue().entrySet()) {
+                CommitMessageImpl message =
+                        new CommitMessageImpl(
+                                partEntry.getKey(),
+                                bucketEntry.getKey(),
+                                null,
+                                new DataIncrement(
+                                        bucketEntry.getValue(),
+                                        Collections.emptyList(),
+                                        Collections.emptyList()),
+                                CompactIncrement.emptyIncrement());
+                committable.addFileCommittable(message);
+            }
+        }
+
+        try (FileStoreCommit commit = targetTable.store().newCommit(commitUser, targetTable)) {
+            commit.commit(committable, false);
         }
     }
 

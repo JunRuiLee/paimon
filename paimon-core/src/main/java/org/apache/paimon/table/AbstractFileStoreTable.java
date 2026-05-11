@@ -738,6 +738,11 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
     }
 
     @Override
+    public void mergeBranch(String sourceBranch, String targetBranch) {
+        branchManager().merge(sourceBranch, targetBranch);
+    }
+
+    @Override
     public TagManager tagManager() {
         return new TagManager(fileIO, path, currentBranch(), coreOptions());
     }
@@ -749,7 +754,7 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
             return new CatalogBranchManager(catalogEnvironment.catalogLoader(), identifier());
         }
         return new FileSystemBranchManager(
-                fileIO, path, snapshotManager(), tagManager(), schemaManager());
+                fileIO, path, snapshotManager(), tagManager(), schemaManager(), this);
     }
 
     @Override
