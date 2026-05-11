@@ -829,6 +829,25 @@ All available procedures are listed below.
       </td>
    </tr>
    <tr>
+      <td>merge_branch</td>
+      <td>
+         -- Use named argument<br/>
+         CALL [catalog.]sys.merge_branch(`table` => 'identifier', source_branch => 'sourceBranchName')<br/><br/>
+         CALL [catalog.]sys.merge_branch(`table` => 'identifier', source_branch => 'sourceBranchName', target_branch => 'targetBranchName')
+      </td>
+      <td>
+         Merge source branch into target branch for append-only tables.
+         Requires identical compatible schema history, consistent row-tracking settings between source and target, and no compaction has been performed on either branch. Arguments:
+            <li>table: the target table identifier. Cannot be empty.</li>
+            <li>source_branch: name of the source branch to merge from. Cannot be empty.</li>
+            <li>target_branch(optional): name of the target branch to merge into. Default is 'main'.</li>
+      </td>
+      <td>
+         CALL sys.merge_branch(`table` => 'default.T', source_branch => 'branch1')<br/><br/>
+         CALL sys.merge_branch(`table` => 'default.T', source_branch => 'branch1', target_branch => 'branch2')
+      </td>
+   </tr>
+   <tr>
       <td>compact_manifest</td>
       <td>
          CALL [catalog.]sys.compact_manifest(`table` => 'identifier')<br/>
