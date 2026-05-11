@@ -374,6 +374,9 @@ public abstract class RESTCatalogTest extends CatalogTestBase {
         assertThrows(
                 Catalog.TableNoPermissionException.class,
                 () -> restCatalog.fastForward(identifier, "test_branch"));
+        assertThrows(
+                Catalog.TableNoPermissionException.class,
+                () -> restCatalog.mergeBranch(identifier, "test_branch", "main"));
         assertThrows(ForbiddenException.class, () -> restCatalog.api().loadTableToken(identifier));
         assertThrows(
                 Catalog.TableNoPermissionException.class,
@@ -2187,6 +2190,9 @@ public abstract class RESTCatalogTest extends CatalogTestBase {
         assertThrows(
                 Catalog.BranchNotExistException.class,
                 () -> restCatalog.fastForward(identifier, "no_exist_branch"));
+        assertThrows(
+                Catalog.BranchNotExistException.class,
+                () -> restCatalog.mergeBranch(identifier, "no_exist_branch", "main"));
         assertThat(restCatalog.listBranches(identifier)).isEmpty();
     }
 

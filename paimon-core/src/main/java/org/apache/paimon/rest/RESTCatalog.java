@@ -758,6 +758,18 @@ public class RESTCatalog implements Catalog {
     }
 
     @Override
+    public void mergeBranch(Identifier identifier, String sourceBranch, String targetBranch)
+            throws BranchNotExistException {
+        try {
+            api.mergeBranch(identifier, sourceBranch, targetBranch);
+        } catch (NoSuchResourceException e) {
+            throw new BranchNotExistException(identifier, sourceBranch, e);
+        } catch (ForbiddenException e) {
+            throw new TableNoPermissionException(identifier, e);
+        }
+    }
+
+    @Override
     public List<String> listBranches(Identifier identifier) throws TableNotExistException {
         try {
             return api.listBranches(identifier);

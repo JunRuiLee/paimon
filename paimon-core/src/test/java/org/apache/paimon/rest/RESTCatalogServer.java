@@ -61,6 +61,7 @@ import org.apache.paimon.rest.requests.CreateTagRequest;
 import org.apache.paimon.rest.requests.CreateViewRequest;
 import org.apache.paimon.rest.requests.ListPartitionsByNamesRequest;
 import org.apache.paimon.rest.requests.MarkDonePartitionsRequest;
+import org.apache.paimon.rest.requests.MergeBranchRequest;
 import org.apache.paimon.rest.requests.RenameBranchRequest;
 import org.apache.paimon.rest.requests.RenameTableRequest;
 import org.apache.paimon.rest.requests.ResetConsumerRequest;
@@ -1885,6 +1886,11 @@ public class RESTCatalogServer {
                                     identifier.getFullName(),
                                     tableLatestSnapshotStore.get(branchIdentifier.getFullName()));
                         }
+                    } else if (resources.length == 5 && "merge".equals(resources[4])) {
+                        // Merge branch: /branches/merge
+                        MergeBranchRequest mergeRequest =
+                                RESTApi.fromJson(data, MergeBranchRequest.class);
+                        table.mergeBranch(mergeRequest.sourceBranch(), mergeRequest.targetBranch());
                     } else {
                         CreateBranchRequest requestBody =
                                 RESTApi.fromJson(data, CreateBranchRequest.class);

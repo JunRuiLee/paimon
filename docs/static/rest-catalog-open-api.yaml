@@ -1267,6 +1267,42 @@ paths:
           $ref: '#/components/responses/BranchNotExistErrorResponse'
         "500":
           $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/databases/{database}/tables/{table}/branches/merge:
+    post:
+      tags:
+        - branch
+      summary: merge branch
+      operationId: mergeBranch
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: database
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MergeBranchRequest'
+      responses:
+        "200":
+          description: Success, no content
+        "401":
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        "404":
+          $ref: '#/components/responses/BranchNotExistErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerErrorResponse'
   /v1/{prefix}/databases/{database}/tables/{table}/tags:
     get:
       tags:
@@ -3303,6 +3339,13 @@ components:
       type: object
       properties:
         branch:
+          type: string
+    MergeBranchRequest:
+      type: object
+      properties:
+        sourceBranch:
+          type: string
+        targetBranch:
           type: string
     ListBranchesResponse:
       type: object
