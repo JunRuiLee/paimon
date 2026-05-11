@@ -374,6 +374,9 @@ public abstract class RESTCatalogTest extends CatalogTestBase {
         assertThrows(
                 Catalog.TableNoPermissionException.class,
                 () -> restCatalog.fastForward(identifier, "test_branch"));
+        assertThrows(
+                Catalog.TableNoPermissionException.class,
+                () -> restCatalog.mergeBranch(identifier, "test_branch", "main"));
         assertThrows(ForbiddenException.class, () -> restCatalog.api().loadTableToken(identifier));
         assertThrows(
                 Catalog.TableNoPermissionException.class,
@@ -2135,6 +2138,31 @@ public abstract class RESTCatalogTest extends CatalogTestBase {
     }
 
     @Test
+    public void testMergeBranch() throws Exception {
+        Identifier tableIdentifier = Identifier.create("merge_db", "merge_table");
+        createTable(tableIdentifier, Maps.newHashMap(), Collections.emptyList());
+        FileStoreTable mainTable = (FileStoreTable) catalog.getTable(tableIdentifier);
+        batchWrite(mainTable, Lists.newArrayList(1, 2, 3));
+
+        mainTable = (FileStoreTable) catalog.getTable(tableIdentifier);
+        mainTable.createTag("tag1", 1);
+        restCatalog.createBranch(tableIdentifier, "branch1", "tag1");
+
+        // Write more data to main (this data should not be in branch)
+        mainTable = (FileStoreTable) catalog.getTable(tableIdentifier);
+        batchWrite(mainTable, Lists.newArrayList(4, 5, 6));
+
+        // Merge branch into main — branch has [1,2,3] from tag, main has [1,2,3,4,5,6]
+        // Only files unique to branch (none in this case since tag data is shared) are merged
+        restCatalog.mergeBranch(tableIdentifier, "branch1", "main");
+
+        mainTable = (FileStoreTable) catalog.getTable(tableIdentifier);
+        List<String> result = batchRead(mainTable);
+        assertThat(result)
+                .containsExactlyInAnyOrder("+I[1]", "+I[2]", "+I[3]", "+I[4]", "+I[5]", "+I[6]");
+    }
+
+    @Test
     void testBranches() throws Exception {
         String databaseName = "testBranchTable";
         catalog.dropDatabase(databaseName, true, true);
@@ -2187,6 +2215,9 @@ public abstract class RESTCatalogTest extends CatalogTestBase {
         assertThrows(
                 Catalog.BranchNotExistException.class,
                 () -> restCatalog.fastForward(identifier, "no_exist_branch"));
+        assertThrows(
+                Catalog.BranchNotExistException.class,
+                () -> restCatalog.mergeBranch(identifier, "no_exist_branch", "main"));
         assertThat(restCatalog.listBranches(identifier)).isEmpty();
     }
 
