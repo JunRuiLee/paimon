@@ -251,7 +251,15 @@ public class FileSystemBranchManager implements BranchManager {
             return;
         }
 
+        createMergeTag(sourceTable, sourceSnapshot, targetBranch);
         commitMerge(targetTable, filesToMerge);
+    }
+
+    private void createMergeTag(
+            FileStoreTable sourceTable, Snapshot sourceSnapshot, String targetBranch) {
+        String tagName =
+                String.format("__merge_into_%s_snapshot_%d", targetBranch, sourceSnapshot.id());
+        sourceTable.createTag(tagName, sourceSnapshot.id());
     }
 
     private void validateMergeBranches(String sourceBranch, String targetBranch) {

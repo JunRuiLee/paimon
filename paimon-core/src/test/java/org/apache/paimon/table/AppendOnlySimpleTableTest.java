@@ -1733,6 +1733,11 @@ public class AppendOnlySimpleTableTest extends SimpleTableTestBase {
         // Merge branch into main
         table.mergeBranch(BRANCH_NAME, "main");
 
+        // Verify merge tag was created on source branch to protect data files
+        long branchLatestSnapshotId = tableBranch.snapshotManager().latestSnapshotId();
+        String expectedTag = String.format("__merge_into_main_snapshot_%d", branchLatestSnapshotId);
+        assertThat(tableBranch.tagManager().tagExists(expectedTag)).isTrue();
+
         // Verify main has data from both sides
         assertThat(
                         getResult(
