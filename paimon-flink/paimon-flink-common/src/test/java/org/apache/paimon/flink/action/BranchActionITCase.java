@@ -529,6 +529,57 @@ public class BranchActionITCase extends ActionITCaseBase {
         assertEquals(expected, sortedActual);
     }
 
+    @Test
+    void testMergeBranch() throws Exception {
+        init(warehouse);
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {DataTypes.BIGINT(), DataTypes.STRING()},
+                        new String[] {"k", "v"});
+        FileStoreTable table =
+                createFileStoreTable(
+                        rowType,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.singletonMap("bucket", "-1"));
+
+        StreamWriteBuilder writeBuilder = table.newStreamWriteBuilder().withCommitUser(commitUser);
+        write = writeBuilder.newWrite();
+        commit = writeBuilder.newCommit();
+
+        writeData(rowData(1L, BinaryString.fromString("Hi")));
+
+        executeSQL(
+                String.format(
+                        "CALL sys.create_branch('%s.%s', 'merge_branch')", database, tableName));
+
+        FileStoreTable branchTable = table.switchToBranch("merge_branch");
+        StreamWriteBuilder branchWriteBuilder =
+                branchTable.newStreamWriteBuilder().withCommitUser(commitUser);
+        write = branchWriteBuilder.newWrite();
+        commit = branchWriteBuilder.newCommit();
+
+        writeData(rowData(2L, BinaryString.fromString("Hello")));
+
+        createAction(
+                        MergeBranchAction.class,
+                        "merge_branch",
+                        "--warehouse",
+                        warehouse,
+                        "--database",
+                        database,
+                        "--table",
+                        tableName,
+                        "--source_branch",
+                        "merge_branch")
+                .run();
+
+        table = getFileStoreTable(tableName);
+        List<String> result = readTableData(table);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, Hi]", "+I[2, Hello]");
+    }
+
     protected List<String> readTableData(FileStoreTable table) throws Exception {
         RowType rowType =
                 RowType.of(

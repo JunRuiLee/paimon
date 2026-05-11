@@ -419,6 +419,29 @@ public class BranchSqlITCase extends CatalogITCaseBase {
     }
 
     @Test
+    public void testBranchMerge() throws Exception {
+        sql(
+                "CREATE TABLE merge_t ("
+                        + " pt INT"
+                        + ", k INT"
+                        + ", v STRING"
+                        + " ) PARTITIONED BY (pt) WITH ("
+                        + " 'bucket' = '-1'"
+                        + " )");
+
+        sql("INSERT INTO merge_t VALUES (1, 10, 'a')");
+
+        sql("CALL sys.create_branch('default.merge_t', 'test')");
+
+        sql("INSERT INTO `merge_t$branch_test` VALUES (2, 20, 'b')");
+
+        sql("CALL sys.merge_branch(`table` => 'default.merge_t', source_branch => 'test')");
+
+        assertThat(collectResult("SELECT * FROM merge_t"))
+                .containsExactlyInAnyOrder("+I[1, 10, a]", "+I[2, 20, b]");
+    }
+
+    @Test
     public void testFallbackBranchBatchRead() throws Exception {
         sql(
                 "CREATE TABLE t ( pt INT NOT NULL, k INT NOT NULL, v STRING ) PARTITIONED BY (pt) WITH ( 'bucket' = '-1' )");
