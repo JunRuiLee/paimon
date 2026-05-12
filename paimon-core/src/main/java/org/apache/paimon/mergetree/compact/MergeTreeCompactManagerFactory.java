@@ -286,7 +286,8 @@ public class MergeTreeCompactManagerFactory implements KvCompactionManagerFactor
                         new LookupMergeFunctionWrapperFactory<>(
                                 logDedupEqualSupplier.get(),
                                 lookupStrategy,
-                                UserDefinedSeqComparator.create(valueType, options));
+                                UserDefinedSeqComparator.create(valueType, options),
+                                options.snapshotSequenceOrdering());
             }
             LookupLevels<?> lookupLevels =
                     createLookupLevels(
