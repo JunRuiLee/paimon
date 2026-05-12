@@ -68,6 +68,7 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
     private final long asyncThreshold;
     private final boolean ignoreCorruptFiles;
     private final boolean ignoreLostFiles;
+    private final boolean snapshotSequenceOrdering;
     private final Map<FormatKey, FormatReaderMapping> formatReaderMappings;
     private final BinaryRow partition;
     private final DeletionVector.Factory dvFactory;
@@ -93,6 +94,7 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
         this.asyncThreshold = coreOptions.fileReaderAsyncThreshold().getBytes();
         this.ignoreCorruptFiles = coreOptions.scanIgnoreCorruptFile();
         this.ignoreLostFiles = coreOptions.scanIgnoreLostFile();
+        this.snapshotSequenceOrdering = coreOptions.snapshotSequenceOrdering();
         this.partition = partition;
         this.formatReaderMappings = new HashMap<>();
         this.dvFactory = dvFactory;
@@ -168,7 +170,14 @@ public class KeyValueFileReaderFactory implements FileReaderFactory<KeyValue> {
                     new ApplyDeletionVectorReader(fileRecordReader, deletionVector.get());
         }
 
-        return new KeyValueDataFileRecordReader(fileRecordReader, keyType, valueType, file.level());
+        // When snapshot-ordering is enabled, minSequenceNumber carries the commit snapshot id
+        // (stamped by FileStoreCommitImpl.assignSnapshotSequenceOrdering at commit time).
+        return new KeyValueDataFileRecordReader(
+                fileRecordReader,
+                keyType,
+                valueType,
+                file.level(),
+                snapshotSequenceOrdering ? file.minSequenceNumber() : KeyValue.UNKNOWN_SNAPSHOT_ID);
     }
 
     public static Builder builder(
