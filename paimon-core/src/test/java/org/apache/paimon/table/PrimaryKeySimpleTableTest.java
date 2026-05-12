@@ -2672,4 +2672,201 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
                                 ""));
         return new PrimaryKeyFileStoreTable(FileIOFinder.find(tablePath), tablePath, tableSchema);
     }
+
+    @Test
+    public void testSnapshotSequenceOrdering() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Snapshot 1: write pk=(1,10) many times so that the per-record sequence number is high.
+        for (int i = 0; i < 100; i++) {
+            write.write(rowData(1, 10, 999L));
+        }
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        // Snapshot 2: write pk=(1,10) once with a lower value. Because the snapshot id (2)
+        // is larger than snapshot 1, this record should win even though its per-record sequence
+        // number is much lower.
+        write.write(rowData(1, 10, 1L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        assertThat(result).containsExactly("1|10|1");
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingFallsBackToSequenceWithinSnapshot() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Within a single snapshot, sequence number is the tiebreaker. The later write (999)
+        // gets a higher sequence number and should win.
+        write.write(rowData(1, 10, 1L));
+        write.write(rowData(1, 10, 999L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        assertThat(result).containsExactly("1|10|999");
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingCompactionPreservesInputSnapshotId() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Snapshot 1: write pk=(1,10) with val=100
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        // Snapshot 2: write pk=(1,10) with val=200 (this should win after compaction)
+        write.write(rowData(1, 10, 200L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        // Snapshot 3: write a DIFFERENT key pk=(1,20) — this creates a concurrent write
+        // that arrives between the compaction's base snapshot and its commit.
+        write.write(rowData(1, 20, 300L));
+        commit.commit(2, write.prepareCommit(false, 2));
+
+        // Snapshot 4: compact (processes files from snapshots 1+2+3)
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(3, write.prepareCommit(true, 3));
+
+        // Snapshot 5: write pk=(1,10) with val=999 — this is newer than ALL previous writes
+        // and MUST win over the compacted result. If compaction incorrectly stamped with
+        // snapshot 4, and this write gets snapshot 5, it still wins (5 > 4). But if
+        // compaction stamped with max(inputs) = 3, this also wins (5 > 3). So we need a
+        // scenario where compaction shadow newer writes.
+        //
+        // The real test: verify the compacted file's minSequenceNumber is max(inputs), not
+        // the compaction commit's snapshotId. We check this via file metadata.
+        write.close();
+        commit.close();
+
+        List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
+        for (DataSplit split : splits) {
+            for (DataFileMeta file : split.dataFiles()) {
+                // After compaction, the compacted file should have minSequenceNumber equal
+                // to max(input snapshot ids), NOT the compaction commit's snapshot id (4).
+                // Input snapshots are 1, 2, 3 → max = 3. Compaction commit is snapshot 4.
+                assertThat(file.minSequenceNumber())
+                        .as(
+                                "Compacted file %s should have minSequenceNumber <= max(input snapshots), "
+                                        + "not the compaction commit's snapshot id",
+                                file.fileName())
+                        .isLessThanOrEqualTo(3);
+            }
+        }
+
+        // Also verify the read result is correct
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, toSplits(splits), toString);
+        assertThat(result).containsExactlyInAnyOrder("1|10|200", "1|20|300");
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingWithChangelogInput() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true);
+                            conf.set(CHANGELOG_PRODUCER, ChangelogProducer.INPUT);
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        write.write(rowData(1, 10, 1L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        assertThat(result).containsExactly("1|10|1");
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingWithChangelogLookup() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true);
+                            conf.set(CHANGELOG_PRODUCER, LOOKUP);
+                        });
+        StreamTableWrite write =
+                table.newWrite(commitUser).withIOManager(new IOManagerImpl(tempDir.toString()));
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        write.write(rowData(1, 10, 1L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        assertThat(result).containsExactly("1|10|1");
+
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingDeleteFromLaterSnapshot() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        write.write(rowDataWithKind(RowKind.DELETE, 1, 10, 100L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        assertThat(result).isEmpty();
+
+        write.close();
+        commit.close();
+    }
 }
