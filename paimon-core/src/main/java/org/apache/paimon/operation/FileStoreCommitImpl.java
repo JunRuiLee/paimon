@@ -970,7 +970,7 @@ public class FileStoreCommitImpl implements FileStoreCommit {
             }
 
             if (options.snapshotSequenceOrdering()) {
-                deltaFiles = assignSnapshotSequenceOrdering(newSnapshotId, commitKind, deltaFiles);
+                deltaFiles = stampSequenceWithSnapshotId(newSnapshotId, commitKind, deltaFiles);
             }
 
             // the added records subtract the deleted records from
@@ -1235,51 +1235,32 @@ public class FileStoreCommitImpl implements FileStoreCommit {
     }
 
     /**
-     * When {@code sequence.snapshot-ordering} is enabled, we repurpose {@link
-     * DataFileMeta#minSequenceNumber()} and {@link DataFileMeta#maxSequenceNumber()} to carry the
-     * commit snapshot id at file level. This avoids adding a new field to DataFileMeta and follows
-     * the same pattern used by row-tracking tables (see {@link
-     * RowTrackingCommitUtils#assignRowTracking}). At read time, {@code KeyValueFileReaderFactory}
-     * extracts the snapshot id from {@code minSequenceNumber} and stamps it onto each {@code
-     * KeyValue}, where the sort-merge readers use it as the primary tiebreaker.
+     * When {@code sequence.snapshot-ordering} is enabled, we stamp the commit snapshot id into
+     * {@link DataFileMeta#minSequenceNumber()} and {@link DataFileMeta#maxSequenceNumber()} at file
+     * level. This avoids adding a new field to DataFileMeta and follows the same pattern used by
+     * row-tracking tables (see {@link RowTrackingCommitUtils#assignRowTracking}). At read time,
+     * {@code KeyValueFileReaderFactory} extracts the snapshot id from {@code minSequenceNumber} and
+     * stamps it onto each {@code KeyValue}, where the sort-merge readers use it as the primary
+     * tiebreaker.
      *
      * <p>The per-record sequence numbers stored inside data files (the {@code _SEQUENCE_NUMBER}
-     * column in the key-value format) are unaffected and still serve as a secondary tiebreaker
-     * within the same snapshot.
+     * column in the key-value format) are unaffected for APPEND commits and still serve as a
+     * secondary tiebreaker within the same snapshot.
      *
-     * <p>For {@link CommitKind#COMPACT} commits, we must NOT stamp with the new snapshot id.
-     * Compaction may run concurrently with data writes: it reads from an older snapshot and may not
-     * include files committed after it started. If we stamped the compacted output with the
-     * compaction's snapshot id (which is higher than any concurrent write's snapshot id), the
-     * compacted result would incorrectly shadow newer data. Instead, we propagate the maximum
-     * snapshot id from the compaction's input files (the DELETE entries), so that newer concurrent
-     * writes retain their ordering advantage. If no DELETE entries exist, we fall back to the
-     * current snapshot id as a safe default.
-     *
-     * <p>Note: the snapshot id is stamped at file level, not propagated through merge functions.
-     * Even if a merge function (e.g. aggregation) creates a new KeyValue without copying
-     * snapshotId, the compacted output file will be correctly stamped here at commit time.
+     * <p>For {@link CommitKind#COMPACT} commits, the compaction rewriter has already written each
+     * record's snapshotId into the per-record {@code _SEQUENCE_NUMBER} column, so the file-level
+     * min/maxSequenceNumber (tracked by the writer from per-record values) already reflects the
+     * correct snapshot id range. We return the files unchanged.
      */
-    private static List<ManifestEntry> assignSnapshotSequenceOrdering(
+    private static List<ManifestEntry> stampSequenceWithSnapshotId(
             long snapshotId, CommitKind commitKind, List<ManifestEntry> files) {
-        long stamp = snapshotId;
         if (commitKind == CommitKind.COMPACT) {
-            boolean found = false;
-            stamp = 0;
-            for (ManifestEntry entry : files) {
-                if (entry.kind() == FileKind.DELETE) {
-                    stamp = Math.max(stamp, entry.file().minSequenceNumber());
-                    found = true;
-                }
-            }
-            if (!found) {
-                stamp = snapshotId;
-            }
+            return files;
         }
         List<ManifestEntry> result = new ArrayList<>(files.size());
         for (ManifestEntry entry : files) {
             if (entry.kind() == FileKind.ADD) {
-                result.add(entry.assignSequenceNumber(stamp, stamp));
+                result.add(entry.assignSequenceNumber(snapshotId, snapshotId));
             } else {
                 result.add(entry);
             }

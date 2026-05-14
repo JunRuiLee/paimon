@@ -37,22 +37,20 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
     private final KeyValueSerializer serializer;
     private final int level;
     private final long snapshotId;
-
-    public KeyValueDataFileRecordReader(
-            FileRecordReader<InternalRow> reader, RowType keyType, RowType valueType, int level) {
-        this(reader, keyType, valueType, level, KeyValue.UNKNOWN_SNAPSHOT_ID);
-    }
+    private final boolean recoverSnapshotIdFromSequence;
 
     public KeyValueDataFileRecordReader(
             FileRecordReader<InternalRow> reader,
             RowType keyType,
             RowType valueType,
             int level,
-            long snapshotId) {
+            long snapshotId,
+            boolean recoverSnapshotIdFromSequence) {
         this.reader = reader;
         this.serializer = new KeyValueSerializer(keyType, valueType);
         this.level = level;
         this.snapshotId = snapshotId;
+        this.recoverSnapshotIdFromSequence = recoverSnapshotIdFromSequence;
     }
 
     @Nullable
@@ -64,13 +62,18 @@ public class KeyValueDataFileRecordReader implements FileRecordReader<KeyValue> 
         }
 
         return iterator.transform(
-                internalRow ->
-                        internalRow == null
-                                ? null
-                                : serializer
-                                        .fromRow(internalRow)
-                                        .setLevel(level)
-                                        .setSnapshotId(snapshotId));
+                internalRow -> {
+                    if (internalRow == null) {
+                        return null;
+                    }
+                    KeyValue kv = serializer.fromRow(internalRow).setLevel(level);
+                    if (recoverSnapshotIdFromSequence) {
+                        kv.setSnapshotId(kv.sequenceNumber());
+                    } else {
+                        kv.setSnapshotId(snapshotId);
+                    }
+                    return kv;
+                });
     }
 
     @Override

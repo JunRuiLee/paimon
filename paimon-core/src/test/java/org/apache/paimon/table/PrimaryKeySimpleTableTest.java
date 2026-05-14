@@ -2745,8 +2745,7 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
         write.write(rowData(1, 10, 200L));
         commit.commit(1, write.prepareCommit(false, 1));
 
-        // Snapshot 3: write a DIFFERENT key pk=(1,20) — this creates a concurrent write
-        // that arrives between the compaction's base snapshot and its commit.
+        // Snapshot 3: write a DIFFERENT key pk=(1,20)
         write.write(rowData(1, 20, 300L));
         commit.commit(2, write.prepareCommit(false, 2));
 
@@ -2754,27 +2753,19 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
         write.compact(binaryRow(1), 0, true);
         commit.commit(3, write.prepareCommit(true, 3));
 
-        // Snapshot 5: write pk=(1,10) with val=999 — this is newer than ALL previous writes
-        // and MUST win over the compacted result. If compaction incorrectly stamped with
-        // snapshot 4, and this write gets snapshot 5, it still wins (5 > 4). But if
-        // compaction stamped with max(inputs) = 3, this also wins (5 > 3). So we need a
-        // scenario where compaction shadow newer writes.
-        //
-        // The real test: verify the compacted file's minSequenceNumber is max(inputs), not
-        // the compaction commit's snapshotId. We check this via file metadata.
         write.close();
         commit.close();
 
         List<DataSplit> splits = table.newSnapshotReader().read().dataSplits();
         for (DataSplit split : splits) {
             for (DataFileMeta file : split.dataFiles()) {
-                // After compaction, the compacted file should have minSequenceNumber equal
-                // to max(input snapshot ids), NOT the compaction commit's snapshot id (4).
-                // Input snapshots are 1, 2, 3 → max = 3. Compaction commit is snapshot 4.
+                // The compacted file's minSequenceNumber should reflect the min snapshot id
+                // of records inside (from per-record _SEQUENCE_NUMBER values written during
+                // compaction), NOT the compaction commit's snapshot id (4).
                 assertThat(file.minSequenceNumber())
                         .as(
-                                "Compacted file %s should have minSequenceNumber <= max(input snapshots), "
-                                        + "not the compaction commit's snapshot id",
+                                "Compacted file %s should have minSequenceNumber from per-record "
+                                        + "snapshot ids, not the compaction commit's snapshot id",
                                 file.fileName())
                         .isLessThanOrEqualTo(3);
             }
@@ -2786,6 +2777,106 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
                 r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
         List<String> result = getResult(read, toSplits(splits), toString);
         assertThat(result).containsExactlyInAnyOrder("1|10|200", "1|20|300");
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingCompactionNoOrderingReversal() throws Exception {
+        // Reproduces the scenario from the PR review: compaction of files from
+        // snapshot 1 and 3 must NOT cause records from snapshot 1 to win over
+        // an uncompacted file from snapshot 2.
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true);
+                            conf.set(CoreOptions.BUCKET, 1);
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Snapshot 1: write pk=(1,10) with val=100
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        // Snapshot 2: write SAME key pk=(1,10) with val=200 — this should win
+        write.write(rowData(1, 10, 200L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        // Snapshot 3: write DIFFERENT key pk=(1,20) with val=300
+        write.write(rowData(1, 20, 300L));
+        commit.commit(2, write.prepareCommit(false, 2));
+
+        // Compact all files — after compaction, pk=(1,10) from snapshot 1 gets merged
+        // with pk=(1,20) from snapshot 3 into one output file. The key question is:
+        // does pk=(1,10) in the compacted file still correctly lose to snapshot 2's
+        // version of the same key?
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(3, write.prepareCommit(true, 3));
+
+        // Write pk=(1,10) again with val=999 — snapshot 5 should definitely win
+        write.write(rowData(1, 10, 999L));
+        commit.commit(4, write.prepareCommit(false, 4));
+
+        write.close();
+        commit.close();
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        // pk=(1,10): snapshot 5 (val=999) wins over snapshot 2 (val=200) and snapshot 1 (val=100)
+        // pk=(1,20): snapshot 3 (val=300) is the only version
+        assertThat(result).containsExactlyInAnyOrder("1|10|999", "1|20|300");
+    }
+
+    @Test
+    public void testSnapshotSequenceOrderingMultiRoundCompaction() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true);
+                            conf.set(CoreOptions.BUCKET, 1);
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Snapshot 1: pk=(1,10) val=100
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        // Snapshot 2: pk=(1,10) val=200 — should win over snapshot 1
+        write.write(rowData(1, 10, 200L));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        // Snapshot 3: pk=(1,20) val=300
+        write.write(rowData(1, 20, 300L));
+        commit.commit(2, write.prepareCommit(false, 2));
+
+        // First compaction (snapshot 4)
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(3, write.prepareCommit(true, 3));
+
+        // Snapshot 5: pk=(1,10) val=500 — should win over everything
+        write.write(rowData(1, 10, 500L));
+        commit.commit(4, write.prepareCommit(false, 4));
+
+        // Snapshot 6: pk=(1,30) val=600
+        write.write(rowData(1, 30, 600L));
+        commit.commit(5, write.prepareCommit(false, 5));
+
+        // Second compaction (snapshot 7) — first compaction's output is now input
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(6, write.prepareCommit(true, 6));
+
+        write.close();
+        commit.close();
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getLong(2);
+        List<String> result = getResult(read, splits, toString);
+        assertThat(result).containsExactlyInAnyOrder("1|10|500", "1|20|300", "1|30|600");
     }
 
     @Test
