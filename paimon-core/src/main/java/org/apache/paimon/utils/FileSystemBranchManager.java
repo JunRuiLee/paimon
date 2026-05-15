@@ -224,7 +224,7 @@ public class FileSystemBranchManager implements BranchManager {
         BranchManager.mergeValidate(sourceBranch, targetBranch);
         validateMergeBranches(sourceBranch, targetBranch);
         validateAppendOnly(sourceBranch, targetBranch);
-        validateRowTrackingDisabled(sourceBranch, targetBranch);
+        validateRowTrackingConsistent(sourceBranch, targetBranch);
         validateLatestSchema(sourceBranch, targetBranch);
 
         List<ManifestEntry> filesToMerge = computeMergeDiff(sourceBranch, targetBranch);
@@ -315,19 +315,23 @@ public class FileSystemBranchManager implements BranchManager {
                 targetBranch);
     }
 
-    private void validateRowTrackingDisabled(String sourceBranch, String targetBranch) {
-        validateRowTrackingDisabled(sourceBranch);
-        validateRowTrackingDisabled(targetBranch);
+    private void validateRowTrackingConsistent(String sourceBranch, String targetBranch) {
+        boolean sourceEnabled = isRowTrackingEnabled(sourceBranch);
+        boolean targetEnabled = isRowTrackingEnabled(targetBranch);
+        checkArgument(
+                sourceEnabled == targetEnabled,
+                "Cannot merge branch '%s' into '%s': row-tracking settings must match "
+                        + "(source=%s, target=%s).",
+                sourceBranch,
+                targetBranch,
+                sourceEnabled,
+                targetEnabled);
     }
 
-    private void validateRowTrackingDisabled(String branch) {
+    private boolean isRowTrackingEnabled(String branch) {
         SchemaManager schemaManager = new SchemaManager(fileIO, tablePath, branch);
         TableSchema schema = schemaManager.latest().get();
-        checkArgument(
-                !new CoreOptions(schema.options()).rowTrackingEnabled(),
-                "Branch merge does not support row-tracking tables currently, "
-                        + "but branch '%s' enables row tracking.",
-                branch);
+        return new CoreOptions(schema.options()).rowTrackingEnabled();
     }
 
     private void validateNoCompaction(

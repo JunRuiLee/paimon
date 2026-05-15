@@ -224,7 +224,7 @@ Merge branch merges the data files from the source branch into the target branch
 {{< hint warning >}}
 __Limitations:__
 - Only supported for **append-only tables** (tables without primary keys).
-- Not supported for **row-tracking tables**.
+- Row-tracking tables are supported only when **source and target branches have the same row-tracking setting**.
 - Both source and target branches must **not have been compacted**.
 - The latest schema of the source and target branches must be **identical**, and all schemas
   referenced by files to merge must exist with the same schema history in the target branch.

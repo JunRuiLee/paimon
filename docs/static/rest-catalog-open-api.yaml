@@ -1274,7 +1274,7 @@ paths:
       summary: merge branch
       description: >-
         Merge data files from source branch into target branch.
-        Only supported for append-only tables with row tracking disabled,
+        Only supported for append-only tables with consistent row-tracking settings,
         compatible schema history, and no compaction performed on either branch.
       operationId: mergeBranch
       parameters:

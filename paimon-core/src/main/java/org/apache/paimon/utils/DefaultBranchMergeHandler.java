@@ -18,6 +18,7 @@
 
 package org.apache.paimon.utils;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.io.CompactIncrement;
@@ -34,10 +35,10 @@ import org.apache.paimon.table.sink.CommitMessageImpl;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -70,35 +71,76 @@ public class DefaultBranchMergeHandler implements BranchMergeHandler {
     @Override
     public void commit(String targetBranch, List<ManifestEntry> filesToMerge) {
         FileStoreTable branchTable = branchTableFactory.apply(targetBranch);
-        Map<BinaryRow, Map<Integer, List<DataFileMeta>>> grouped = new HashMap<>();
+        boolean rowTrackingEnabled =
+                new CoreOptions(branchTable.schema().options()).rowTrackingEnabled();
+
+        Map<MergeKey, List<DataFileMeta>> grouped = new LinkedHashMap<>();
         for (ManifestEntry entry : filesToMerge) {
-            grouped.computeIfAbsent(entry.partition(), k -> new HashMap<>())
-                    .computeIfAbsent(entry.bucket(), k -> new ArrayList<>())
-                    .add(entry.file());
+            DataFileMeta file = prepareFileForTargetCommit(entry.file(), rowTrackingEnabled);
+            grouped.computeIfAbsent(
+                            new MergeKey(
+                                    entry.partition().copy(), entry.bucket(), entry.totalBuckets()),
+                            k -> new ArrayList<>())
+                    .add(file);
         }
 
         String commitUser = UUID.randomUUID().toString();
         ManifestCommittable committable = new ManifestCommittable(0);
-        for (Map.Entry<BinaryRow, Map<Integer, List<DataFileMeta>>> partEntry :
-                grouped.entrySet()) {
-            for (Map.Entry<Integer, List<DataFileMeta>> bucketEntry :
-                    partEntry.getValue().entrySet()) {
-                CommitMessageImpl message =
-                        new CommitMessageImpl(
-                                partEntry.getKey(),
-                                bucketEntry.getKey(),
-                                null,
-                                new DataIncrement(
-                                        bucketEntry.getValue(),
-                                        Collections.emptyList(),
-                                        Collections.emptyList()),
-                                CompactIncrement.emptyIncrement());
-                committable.addFileCommittable(message);
-            }
+        for (Map.Entry<MergeKey, List<DataFileMeta>> e : grouped.entrySet()) {
+            MergeKey key = e.getKey();
+            CommitMessageImpl message =
+                    new CommitMessageImpl(
+                            key.partition,
+                            key.bucket,
+                            key.totalBuckets,
+                            new DataIncrement(
+                                    e.getValue(), Collections.emptyList(), Collections.emptyList()),
+                            CompactIncrement.emptyIncrement());
+            committable.addFileCommittable(message);
         }
 
         try (FileStoreCommit commit = branchTable.store().newCommit(commitUser, branchTable)) {
             commit.appendCommitCheckConflict(true).commit(committable, true);
+        }
+    }
+
+    private DataFileMeta prepareFileForTargetCommit(DataFileMeta file, boolean rowTrackingEnabled) {
+        if (rowTrackingEnabled && file.firstRowId() != null) {
+            // Source files already have row ids assigned in their branch. Clear them so the
+            // target branch commit path assigns fresh, non-overlapping row ids.
+            return file.clearFirstRowId();
+        }
+        return file;
+    }
+
+    private static class MergeKey {
+        final BinaryRow partition;
+        final int bucket;
+        final int totalBuckets;
+
+        MergeKey(BinaryRow partition, int bucket, int totalBuckets) {
+            this.partition = partition;
+            this.bucket = bucket;
+            this.totalBuckets = totalBuckets;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof MergeKey)) {
+                return false;
+            }
+            MergeKey that = (MergeKey) o;
+            return bucket == that.bucket
+                    && totalBuckets == that.totalBuckets
+                    && Objects.equals(partition, that.partition);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(partition, bucket, totalBuckets);
         }
     }
 }

@@ -19,6 +19,7 @@
 package org.apache.paimon.table;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.append.AppendCompactTask;
 import org.apache.paimon.bucket.DefaultBucketFunction;
 import org.apache.paimon.data.BinaryRow;
@@ -37,6 +38,7 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.io.BundleRecords;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.manifest.FileEntry;
 import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFile;
 import org.apache.paimon.manifest.ManifestFileMeta;
@@ -88,8 +90,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1983,18 +1987,318 @@ public class AppendOnlySimpleTableTest extends SimpleTableTestBase {
         }
 
         table.createBranch(BRANCH_NAME);
-        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+        FileStoreTable tableBranch = table.switchToBranch(BRANCH_NAME);
+
         try (StreamTableWrite write = tableBranch.newWrite(commitUser);
                 StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
             write.write(rowData(1, 10, 100L));
             commit.commit(1, write.prepareCommit(false, 2));
         }
 
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
+
+        assertRowIdRangesNonOverlapping(table);
+        Snapshot snapshot = table.snapshotManager().latestSnapshot();
+        assertThat(snapshot.nextRowId()).isEqualTo(3L);
+    }
+
+    @Test
+    public void testMergeBranchRowTrackingMultipleTimes() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> options.set(CoreOptions.ROW_TRACKING_ENABLED, true));
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = table.switchToBranch(BRANCH_NAME);
+
+        // First write to branch + merge
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        // Second write to branch + merge
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 3));
+        }
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
+
+        assertRowIdRangesNonOverlapping(table);
+        Snapshot snapshot = table.snapshotManager().latestSnapshot();
+        assertThat(snapshot.nextRowId()).isEqualTo(3L);
+    }
+
+    @Test
+    public void testMergeBranchRowTrackingAfterTargetWrites() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> options.set(CoreOptions.ROW_TRACKING_ENABLED, true));
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = table.switchToBranch(BRANCH_NAME);
+
+        // Write 2 rows to branch
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            write.write(rowData(1, 11, 101L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Write 3 rows to main independently (advances main nextRowId)
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            write.write(rowData(2, 21, 201L));
+            write.write(rowData(2, 22, 202L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .hasSize(6);
+
+        assertRowIdRangesNonOverlapping(table);
+        Snapshot snapshot = table.snapshotManager().latestSnapshot();
+        assertThat(snapshot.nextRowId()).isEqualTo(6L);
+    }
+
+    @Test
+    public void testMergeBranchRowTrackingBetweenNonMainBranches() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> options.set(CoreOptions.ROW_TRACKING_ENABLED, true));
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createTag("tag1", 1);
+        table.createBranch("branchA", "tag1");
+        table.createBranch("branchB", "tag1");
+        FileStoreTable tableA = table.switchToBranch("branchA");
+        FileStoreTable tableB = table.switchToBranch("branchB");
+
+        try (StreamTableWrite write = tableA.newWrite(commitUser);
+                StreamTableCommit commit = tableA.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        try (StreamTableWrite write = tableB.newWrite(commitUser);
+                StreamTableCommit commit = tableB.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+
+        table.mergeBranch("branchA", "branchB");
+
+        tableB = table.switchToBranch("branchB");
+        assertThat(
+                        getResult(
+                                tableB.newRead(),
+                                toSplits(tableB.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
+
+        assertRowIdRangesNonOverlapping(tableB);
+        Snapshot snapshot = tableB.snapshotManager().latestSnapshot();
+        assertThat(snapshot.nextRowId()).isEqualTo(3L);
+    }
+
+    @Test
+    public void testMergeBranchRowTrackingMismatch() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> options.set(CoreOptions.ROW_TRACKING_ENABLED, true));
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = table.switchToBranch(BRANCH_NAME);
+
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Directly write a new schema to the branch with row-tracking disabled
+        SchemaManager branchSchemaManager =
+                new SchemaManager(table.fileIO(), table.location(), BRANCH_NAME);
+        TableSchema branchSchema = branchSchemaManager.latest().get();
+        Map<String, String> newOptions = new HashMap<>(branchSchema.options());
+        newOptions.remove("row-tracking.enabled");
+        TableSchema mismatchedSchema =
+                new TableSchema(
+                        branchSchema.version(),
+                        branchSchema.id() + 1,
+                        branchSchema.fields(),
+                        branchSchema.highestFieldId(),
+                        branchSchema.partitionKeys(),
+                        branchSchema.primaryKeys(),
+                        newOptions,
+                        branchSchema.comment(),
+                        branchSchema.timeMillis());
+        branchSchemaManager.commit(mismatchedSchema);
+
         assertThatThrownBy(() -> table.mergeBranch(BRANCH_NAME, "main"))
                 .satisfies(
                         anyCauseMatches(
                                 IllegalArgumentException.class,
-                                "Branch merge does not support row-tracking tables currently"));
+                                "row-tracking settings must match"));
+    }
+
+    @Test
+    public void testMergeBranchRowTrackingStaleMerge() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> options.set(CoreOptions.ROW_TRACKING_ENABLED, true));
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = table.switchToBranch(BRANCH_NAME);
+
+        // Write to branch
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Write to main multiple times to advance nextRowId
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(3, 30, 300L));
+            write.write(rowData(3, 31, 301L));
+            commit.commit(3, write.prepareCommit(false, 3));
+        }
+
+        // Merge: branch file should get firstRowId after all main files
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .hasSize(5);
+
+        assertRowIdRangesNonOverlapping(table);
+        Snapshot snapshot = table.snapshotManager().latestSnapshot();
+        assertThat(snapshot.nextRowId()).isEqualTo(5L);
+
+        // Write more to main, then merge again (branch has no new data, should be no-op)
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(4, 40, 400L));
+            commit.commit(4, write.prepareCommit(false, 4));
+        }
+
+        long snapshotIdBefore = table.snapshotManager().latestSnapshotId();
+        table.mergeBranch(BRANCH_NAME, "main");
+        long snapshotIdAfter = table.snapshotManager().latestSnapshotId();
+
+        // Second merge should be no-op (branch file already in target)
+        assertThat(snapshotIdAfter).isEqualTo(snapshotIdBefore);
+
+        assertRowIdRangesNonOverlapping(table);
+        Snapshot finalSnapshot = table.snapshotManager().latestSnapshot();
+        assertThat(finalSnapshot.nextRowId()).isEqualTo(6L);
+    }
+
+    private void assertRowIdRangesNonOverlapping(FileStoreTable table) {
+        ManifestList manifestList = table.store().manifestListFactory().create();
+        ManifestFile manifestFile = table.store().manifestFileFactory().create();
+        Snapshot snapshot = table.snapshotManager().latestSnapshot();
+        Map<FileEntry.Identifier, ManifestEntry> files = new LinkedHashMap<>();
+        FileEntry.mergeEntries(manifestFile, manifestList.readDataManifests(snapshot), files, null);
+
+        List<long[]> ranges = new ArrayList<>();
+        for (ManifestEntry entry : files.values()) {
+            if (entry.file().firstRowId() != null) {
+                long start = entry.file().firstRowId();
+                long end = start + entry.file().rowCount() - 1;
+                ranges.add(new long[] {start, end});
+            }
+        }
+        ranges.sort(Comparator.comparingLong(r -> r[0]));
+        for (int i = 1; i < ranges.size(); i++) {
+            assertTrue(
+                    ranges.get(i)[0] > ranges.get(i - 1)[1],
+                    String.format(
+                            "Row-id ranges overlap: [%d, %d] and [%d, %d]",
+                            ranges.get(i - 1)[0],
+                            ranges.get(i - 1)[1],
+                            ranges.get(i)[0],
+                            ranges.get(i)[1]));
+        }
     }
 
     @Test
