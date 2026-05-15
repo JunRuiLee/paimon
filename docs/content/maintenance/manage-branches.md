@@ -217,6 +217,67 @@ CALL sys.fast_forward('default.T', 'branch1');
 
 {{< /tabs >}}
 
+## Merge Branch
+
+Merge branch merges the data files from the source branch into the target branch. Unlike fast-forward which replaces the target branch entirely, merge branch only adds new files from the source that do not already exist in the target.
+
+{{< hint warning >}}
+__Limitations:__
+- Only supported for **append-only tables** (tables without primary keys).
+- Not supported for **row-tracking tables**.
+- Both source and target branches must **not have been compacted**.
+- The latest schema of the source and target branches must be **identical**, and all schemas
+  referenced by files to merge must exist with the same schema history in the target branch.
+{{< /hint >}}
+
+{{< tabs "merge_branch" >}}
+
+{{< tab "Flink SQL" >}}
+
+```sql
+-- merge branch1 into main (default target)
+CALL sys.merge_branch(`table` => 'default.T', source_branch => 'branch1');
+
+-- merge branch1 into branch2
+CALL sys.merge_branch(`table` => 'default.T', source_branch => 'branch1', target_branch => 'branch2');
+```
+
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
+
+Run the following command:
+
+```bash
+<FLINK_HOME>/bin/flink run \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    merge_branch \
+    --warehouse <warehouse-path> \
+    --database <database-name> \
+    --table <table-name> \
+    --source_branch <source-branch-name> \
+    [--target_branch <target-branch-name>] \
+    [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]]
+```
+
+{{< /tab >}}
+
+{{< tab "Spark SQL" >}}
+
+Run the following sql:
+
+```sql
+-- merge branch1 into main (default target)
+CALL sys.merge_branch(table => 'test_db.T', source_branch => 'branch1');
+
+-- merge branch1 into branch2
+CALL sys.merge_branch(table => 'test_db.T', source_branch => 'branch1', target_branch => 'branch2');
+```
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
 ## Batch Reading from Fallback Branch
 
 You can set the table option `scan.fallback-branch`

@@ -37,6 +37,7 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.io.BundleRecords;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFile;
 import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.manifest.ManifestList;
@@ -73,6 +74,7 @@ import org.apache.paimon.table.source.TableScan;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.DefaultBranchMergeHandler;
 import org.apache.paimon.utils.RoaringBitmap32;
 
 import org.apache.paimon.shade.org.apache.parquet.hadoop.ParquetOutputFormat;
@@ -117,6 +119,7 @@ import static org.apache.paimon.CoreOptions.WRITE_ONLY;
 import static org.apache.paimon.io.DataFileTestUtils.row;
 import static org.apache.paimon.predicate.SortValue.NullOrdering.NULLS_LAST;
 import static org.apache.paimon.predicate.SortValue.SortDirection.DESCENDING;
+import static org.apache.paimon.testutils.assertj.PaimonAssertions.anyCauseMatches;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1698,5 +1701,464 @@ public class AppendOnlySimpleTableTest extends SimpleTableTestBase {
                                 conf.toMap(),
                                 ""));
         return new AppendOnlyFileStoreTable(FileIOFinder.find(tablePath), tablePath, tableSchema);
+    }
+
+    @Test
+    public void testMergeBranch() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        // Write data to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create branch
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+
+        // Write data to branch
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Write more data to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+
+        // Merge branch into main
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        // Verify main has data from both sides
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
+    }
+
+    @Test
+    public void testMergeBranchMultipleTimes() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        // Write data to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create branch
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+
+        // First write to branch
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // First merge
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        // Second write to branch
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 3));
+        }
+
+        // Second merge
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        // Verify no duplicates: main has all 3 rows exactly once
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
+    }
+
+    @Test
+    public void testMergeBranchFailsOnStaleDuplicateCommit() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        DefaultBranchMergeHandler handler = new DefaultBranchMergeHandler(table::switchToBranch);
+        Map<org.apache.paimon.manifest.FileEntry.Identifier, ManifestEntry> sourceFiles =
+                handler.readBranchFiles(BRANCH_NAME);
+        Map<org.apache.paimon.manifest.FileEntry.Identifier, ManifestEntry> targetFiles =
+                handler.readBranchFiles("main");
+        List<ManifestEntry> filesToMerge =
+                sourceFiles.entrySet().stream()
+                        .filter(entry -> !targetFiles.containsKey(entry.getKey()))
+                        .map(Map.Entry::getValue)
+                        .collect(Collectors.toList());
+
+        handler.commit("main", filesToMerge);
+        assertThatThrownBy(() -> handler.commit("main", filesToMerge))
+                .satisfies(anyCauseMatches(RuntimeException.class, "Trying to add file"));
+    }
+
+    @Test
+    public void testMergeBranchBidirectional() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        // Write shared data to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create branch
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+
+        // Write to branch
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Write to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+
+        // Merge branch -> main
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        // Merge main -> branch
+        table.mergeBranch("main", BRANCH_NAME);
+
+        // Verify both have the same data without duplicates
+        List<String> mainData =
+                getResult(
+                        table.newRead(),
+                        toSplits(table.newSnapshotReader().read().dataSplits()),
+                        BATCH_ROW_TO_STRING);
+        List<String> branchData =
+                getResult(
+                        tableBranch.newRead(),
+                        toSplits(tableBranch.newSnapshotReader().read().dataSplits()),
+                        BATCH_ROW_TO_STRING);
+
+        assertThat(mainData)
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
+        assertThat(branchData).containsExactlyInAnyOrderElementsOf(mainData);
+    }
+
+    @Test
+    public void testMergeBranchEmptyDiff() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        // Write data to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create branch from tag (has same data as main)
+        table.createTag("tag1", 1);
+        table.createBranch(BRANCH_NAME, "tag1");
+
+        // Merge should be a no-op (no exception, no new snapshot)
+        long snapshotBefore = table.snapshotManager().latestSnapshotId();
+        table.mergeBranch(BRANCH_NAME, "main");
+        long snapshotAfter = table.snapshotManager().latestSnapshotId();
+        assertThat(snapshotAfter).isEqualTo(snapshotBefore);
+    }
+
+    @Test
+    public void testMergeBranchSchemaConflict() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        // Write data to main
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create branch from tag
+        table.createTag("tag1", 1);
+        table.createBranch(BRANCH_NAME, "tag1");
+
+        // Modify schema on main (add a column)
+        SchemaManager schemaManager = new SchemaManager(table.fileIO(), table.location());
+        schemaManager.commitChanges(SchemaChange.addColumn("new_col", DataTypes.INT()));
+
+        // Merge should fail due to schema mismatch
+        assertThatThrownBy(() -> table.mergeBranch(BRANCH_NAME, "main"))
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "Cannot merge branch 'branch1' into 'main', schema mismatch."));
+    }
+
+    @Test
+    public void testMergeBranchSchemaHistoryConflict() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createTag("tag1", 1);
+        table.createBranch(BRANCH_NAME, "tag1");
+
+        SchemaManager branchSchemaManager =
+                new SchemaManager(table.fileIO(), table.location(), BRANCH_NAME);
+        branchSchemaManager.commitChanges(SchemaChange.addColumn("source_col", DataTypes.INT()));
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+        try (BatchTableWrite write =
+                        tableBranch.newBatchWriteBuilder().newWrite().withWriteType(ROW_TYPE);
+                BatchTableCommit commit = tableBranch.newBatchWriteBuilder().newCommit()) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(write.prepareCommit());
+        }
+        branchSchemaManager.commitChanges(
+                Collections.singletonList(SchemaChange.dropColumn("source_col")));
+
+        SchemaManager mainSchemaManager = new SchemaManager(table.fileIO(), table.location());
+        mainSchemaManager.commitChanges(SchemaChange.addColumn("target_col", DataTypes.INT()));
+        mainSchemaManager.commitChanges(
+                Collections.singletonList(SchemaChange.dropColumn("target_col")));
+
+        assertThatThrownBy(() -> table.mergeBranch(BRANCH_NAME, "main"))
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "schema history mismatch for schema id 1"));
+    }
+
+    @Test
+    public void testMergeBranchRowTrackingTable() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> options.set(CoreOptions.ROW_TRACKING_ENABLED, true));
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        assertThatThrownBy(() -> table.mergeBranch(BRANCH_NAME, "main"))
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "Branch merge does not support row-tracking tables currently"));
+    }
+
+    @Test
+    public void testMergeBranchSameBranch() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        assertThatThrownBy(() -> table.mergeBranch(BRANCH_NAME, BRANCH_NAME))
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "Cannot merge branch 'branch1' into itself."));
+    }
+
+    @Test
+    public void testMergeBranchSamePartition() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        // Write data to main (partition pt=0)
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create branch
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+
+        // Write to branch with same partition pt=0
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(0, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Merge branch into main
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        // Both files coexist in the same partition
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "0|10|100|binary|varbinary|mapKey:mapVal|multiset");
+    }
+
+    @Test
+    public void testMergeBranchNonExistentBranch() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        assertThatThrownBy(() -> table.mergeBranch("nonexistent", "main"))
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "Branch 'nonexistent' doesn't exist."));
+    }
+
+    @Test
+    public void testMergeBranchMultiBucket() throws Exception {
+        FileStoreTable table = createFileStoreTable(2);
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            write.write(rowData(0, 1, 1L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+        FileStoreTable tableBranch = createBranchTable(BRANCH_NAME);
+
+        try (StreamTableWrite write = tableBranch.newWrite(commitUser);
+                StreamTableCommit commit = tableBranch.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            write.write(rowData(1, 11, 110L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        table.mergeBranch(BRANCH_NAME, "main");
+
+        assertThat(
+                        getResult(
+                                table.newRead(),
+                                toSplits(table.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "0|1|1|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|11|110|binary|varbinary|mapKey:mapVal|multiset");
+    }
+
+    @Test
+    public void testMergeBranchNonExistentTargetBranch() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        table.createBranch(BRANCH_NAME);
+
+        assertThatThrownBy(() -> table.mergeBranch(BRANCH_NAME, "nonexistent"))
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "Branch 'nonexistent' doesn't exist."));
+    }
+
+    @Test
+    public void testMergeBranchBetweenNonMainBranches() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        try (StreamTableWrite write = table.newWrite(commitUser);
+                StreamTableCommit commit = table.newCommit(commitUser)) {
+            write.write(rowData(0, 0, 0L));
+            commit.commit(0, write.prepareCommit(false, 1));
+        }
+
+        // Create two branches from tag so they share the same base data
+        table.createTag("tag1", 1);
+        table.createBranch("branchA", "tag1");
+        table.createBranch("branchB", "tag1");
+        FileStoreTable tableA = createBranchTable("branchA");
+        FileStoreTable tableB = createBranchTable("branchB");
+
+        // Write to branchA
+        try (StreamTableWrite write = tableA.newWrite(commitUser);
+                StreamTableCommit commit = tableA.newCommit(commitUser)) {
+            write.write(rowData(1, 10, 100L));
+            commit.commit(1, write.prepareCommit(false, 2));
+        }
+
+        // Write to branchB
+        try (StreamTableWrite write = tableB.newWrite(commitUser);
+                StreamTableCommit commit = tableB.newCommit(commitUser)) {
+            write.write(rowData(2, 20, 200L));
+            commit.commit(2, write.prepareCommit(false, 2));
+        }
+
+        // Merge branchA into branchB
+        table.mergeBranch("branchA", "branchB");
+
+        // Reload branchB table to see changes
+        tableB = createBranchTable("branchB");
+        assertThat(
+                        getResult(
+                                tableB.newRead(),
+                                toSplits(tableB.newSnapshotReader().read().dataSplits()),
+                                BATCH_ROW_TO_STRING))
+                .containsExactlyInAnyOrder(
+                        "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
+                        "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                        "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
     }
 }
