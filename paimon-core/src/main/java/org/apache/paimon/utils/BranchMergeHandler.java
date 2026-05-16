@@ -23,12 +23,16 @@ import org.apache.paimon.manifest.ManifestEntry;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Handler for branch merge data operations (manifest reading, committing). */
 public interface BranchMergeHandler {
 
     /** Read all active data files from the given branch. */
     Map<FileEntry.Identifier, ManifestEntry> readBranchFiles(String branch);
+
+    /** Read only the identifiers of active data files from the given branch. */
+    Set<FileEntry.Identifier> readBranchFileIdentifiers(String branch);
 
     /** Commit the given files to the target branch. */
     void commit(String targetBranch, List<ManifestEntry> filesToMerge);
