@@ -217,6 +217,69 @@ CALL sys.fast_forward('default.T', 'branch1');
 
 {{< /tabs >}}
 
+## Merge Branch
+
+Merge branch adds data files that exist only in the source branch to the target branch. Unlike fast-forward, it does not replace the target branch.
+
+{{< hint warning >}}
+__Limitations:__
+- The table must be created with **`'branch-merge.enabled' = 'true'`**. This option enforces a pure-append table history by rejecting compaction and INSERT OVERWRITE, and it is incompatible with deletion vectors.
+- Only supported for **append-only tables** (tables without primary keys).
+- Row-tracking tables are supported only when **source and target branches have the same row-tracking setting**.
+- The source and target branches must have **compatible schema history** for files being merged.
+{{< /hint >}}
+
+{{< tabs "merge_branch" >}}
+
+{{< tab "Flink SQL" >}}
+
+```sql
+-- table must be created with branch-merge.enabled
+CREATE TABLE T (id INT, name STRING) WITH ('branch-merge.enabled' = 'true');
+
+-- merge branch1 into main (default target)
+CALL sys.merge_branch(`table` => 'default.T', source_branch => 'branch1');
+
+-- merge branch1 into branch2
+CALL sys.merge_branch(`table` => 'default.T', source_branch => 'branch1', target_branch => 'branch2');
+```
+
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
+
+Run the following command:
+
+```bash
+<FLINK_HOME>/bin/flink run \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    merge_branch \
+    --warehouse <warehouse-path> \
+    --database <database-name> \
+    --table <table-name> \
+    --source_branch <source-branch-name> \
+    [--target_branch <target-branch-name>] \
+    [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]]
+```
+
+{{< /tab >}}
+
+{{< tab "Spark SQL" >}}
+
+Run the following sql:
+
+```sql
+-- merge branch1 into main (default target)
+CALL sys.merge_branch(table => 'test_db.T', source_branch => 'branch1');
+
+-- merge branch1 into branch2
+CALL sys.merge_branch(table => 'test_db.T', source_branch => 'branch1', target_branch => 'branch2');
+```
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
 ## Batch Reading from Fallback Branch
 
 You can set the table option `scan.fallback-branch`
