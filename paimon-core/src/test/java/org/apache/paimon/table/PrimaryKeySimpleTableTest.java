@@ -2960,4 +2960,186 @@ public class PrimaryKeySimpleTableTest extends SimpleTableTestBase {
         write.close();
         commit.close();
     }
+
+    /**
+     * Regression: a partial-update merge function must preserve the snapshotId of its inputs in
+     * {@link MergeFunction#getResult()}. Before the fix, {@code reused.replace(...)} reset
+     * snapshotId to {@link KeyValue#UNKNOWN_SNAPSHOT_ID} (-1). With snapshot-ordering on,
+     * compaction then stamps -1 into the per-record _SEQUENCE_NUMBER, causing the compacted file to
+     * have minSequenceNumber=-1 and breaking ordering against later snapshots.
+     */
+    @Test
+    public void testSnapshotSequenceOrderingPartialUpdateCompactionPreservesSnapshotId()
+            throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT(), DataTypes.INT(), DataTypes.INT(), DataTypes.INT()
+                        },
+                        new String[] {"pt", "a", "b", "c"});
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true);
+                            conf.set(MERGE_ENGINE, PARTIAL_UPDATE);
+                            conf.set(BUCKET, 1);
+                        },
+                        rowType);
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Snapshot 1: partial write of column b
+        write.write(GenericRow.of(1, 1, 100, null));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        // Snapshot 2: partial write of column c — partial-update merges with snapshot 1's row
+        write.write(GenericRow.of(1, 1, null, 200));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        // Snapshot 3: compact files from snapshots 1+2. The compaction reader merges the two
+        // partial rows through PartialUpdateMergeFunction.getResult(); if that result carries
+        // snapshotId=-1, stampSequenceWithSnapshotId writes -1 into the file's per-record
+        // _SEQUENCE_NUMBER (and into minSequenceNumber).
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(2, write.prepareCommit(true, 2));
+
+        List<DataSplit> splitsAfterCompact = table.newSnapshotReader().read().dataSplits();
+        for (DataSplit split : splitsAfterCompact) {
+            for (DataFileMeta file : split.dataFiles()) {
+                assertThat(file.minSequenceNumber())
+                        .as(
+                                "Compacted file %s must carry a real snapshot id in"
+                                        + " minSequenceNumber, not -1 (UNKNOWN_SNAPSHOT_ID)."
+                                        + " A value of -1 means PartialUpdateMergeFunction"
+                                        + " dropped snapshotId in getResult().",
+                                file.fileName())
+                        .isGreaterThanOrEqualTo(0L);
+            }
+        }
+
+        // Snapshot 4: write a fresh value of b — this snapshot must win.
+        write.write(GenericRow.of(1, 1, 999, null));
+        commit.commit(3, write.prepareCommit(false, 3));
+
+        // Snapshot 5: another compaction. If snapshot 3's file carried snapshotId=-1, comparators
+        // built on snapshotId would order snapshot 3's records as the most ancient and snapshot 4
+        // would deterministically win — masking the bug for this particular case. Instead we
+        // assert min/maxSequenceNumber of the final compacted file are still real snapshot ids.
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(4, write.prepareCommit(true, 4));
+        for (DataSplit split : table.newSnapshotReader().read().dataSplits()) {
+            for (DataFileMeta file : split.dataFiles()) {
+                assertThat(file.minSequenceNumber())
+                        .as("Final compacted file %s minSequenceNumber", file.fileName())
+                        .isGreaterThanOrEqualTo(0L);
+                assertThat(file.maxSequenceNumber())
+                        .as("Final compacted file %s maxSequenceNumber", file.fileName())
+                        .isGreaterThanOrEqualTo(0L);
+            }
+        }
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r ->
+                        r.getInt(0)
+                                + "|"
+                                + r.getInt(1)
+                                + "|"
+                                + (r.isNullAt(2) ? "null" : r.getInt(2))
+                                + "|"
+                                + (r.isNullAt(3) ? "null" : r.getInt(3));
+        List<String> result = getResult(read, splits, toString);
+        // b=999 (snapshot 4 wins over snapshot 1's 100), c=200 (only snapshot 2 wrote it)
+        assertThat(result).containsExactly("1|1|999|200");
+
+        write.close();
+        commit.close();
+    }
+
+    /**
+     * Regression: an aggregate merge function must preserve the snapshotId of its inputs in {@link
+     * MergeFunction#getResult()}. Mirrors the partial-update regression — if {@code reused.replace(
+     * ...)} drops snapshotId, compaction stamps -1 into the per-record _SEQUENCE_NUMBER and the
+     * compacted file's minSequenceNumber regresses to -1.
+     */
+    @Test
+    public void testSnapshotSequenceOrderingAggregateCompactionPreservesSnapshotId()
+            throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT(), DataTypes.INT(), DataTypes.INT(), DataTypes.INT()
+                        },
+                        new String[] {"pt", "a", "b", "c"});
+        FileStoreTable table =
+                createFileStoreTable(
+                        conf -> {
+                            conf.set(CoreOptions.SEQUENCE_SNAPSHOT_ORDERING, true);
+                            conf.set(MERGE_ENGINE, AGGREGATE);
+                            conf.set(BUCKET, 1);
+                            conf.set("fields.b.aggregate-function", "sum");
+                            conf.set("fields.c.aggregate-function", "max");
+                        },
+                        rowType);
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        // Snapshot 1
+        write.write(GenericRow.of(1, 1, 10, 100));
+        commit.commit(0, write.prepareCommit(false, 0));
+
+        // Snapshot 2: aggregates with snapshot 1's row.
+        write.write(GenericRow.of(1, 1, 20, 50));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        // Snapshot 3: compact files from snapshots 1+2. The compaction reader merges through
+        // AggregateMergeFunction.getResult(); if that result carries snapshotId=-1,
+        // stampSequenceWithSnapshotId writes -1 into the file's per-record _SEQUENCE_NUMBER
+        // (and into minSequenceNumber).
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(2, write.prepareCommit(true, 2));
+
+        for (DataSplit split : table.newSnapshotReader().read().dataSplits()) {
+            for (DataFileMeta file : split.dataFiles()) {
+                assertThat(file.minSequenceNumber())
+                        .as(
+                                "Aggregate-compacted file %s must carry a real snapshot id in"
+                                        + " minSequenceNumber, not -1. A value of -1 means"
+                                        + " AggregateMergeFunction dropped snapshotId in"
+                                        + " getResult().",
+                                file.fileName())
+                        .isGreaterThanOrEqualTo(0L);
+            }
+        }
+
+        // Snapshot 4: another insert that must aggregate on top of the compacted result.
+        write.write(GenericRow.of(1, 1, 5, 999));
+        commit.commit(3, write.prepareCommit(false, 3));
+
+        // Snapshot 5: final compaction — assert min/maxSequenceNumber are still real snapshot ids.
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(4, write.prepareCommit(true, 4));
+        for (DataSplit split : table.newSnapshotReader().read().dataSplits()) {
+            for (DataFileMeta file : split.dataFiles()) {
+                assertThat(file.minSequenceNumber())
+                        .as("Final compacted file %s minSequenceNumber", file.fileName())
+                        .isGreaterThanOrEqualTo(0L);
+                assertThat(file.maxSequenceNumber())
+                        .as("Final compacted file %s maxSequenceNumber", file.fileName())
+                        .isGreaterThanOrEqualTo(0L);
+            }
+        }
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newReadBuilder().newRead();
+        Function<InternalRow, String> toString =
+                r -> r.getInt(0) + "|" + r.getInt(1) + "|" + r.getInt(2) + "|" + r.getInt(3);
+        List<String> result = getResult(read, splits, toString);
+        // b = sum(10, 20, 5) = 35, c = max(100, 50, 999) = 999
+        assertThat(result).containsExactly("1|1|35|999");
+
+        write.close();
+        commit.close();
+    }
 }
