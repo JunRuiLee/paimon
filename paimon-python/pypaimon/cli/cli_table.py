@@ -879,6 +879,116 @@ def cmd_table_drop_partition(args):
         sys.exit(1)
 
 
+def cmd_table_tag_create(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        catalog.create_tag(
+            table_identifier,
+            args.name,
+            snapshot_id=args.snapshot_id,
+            ignore_if_exists=args.ignore_if_exists,
+        )
+        msg = f"Successfully created tag '{args.name}' on table '{table_identifier}'"
+        if args.snapshot_id is not None:
+            msg += f" at snapshot {args.snapshot_id}"
+        print(msg + ".")
+    except Exception as e:
+        print(f"Error: Failed to create tag: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_tag_delete(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        catalog.delete_tag(table_identifier, args.name)
+        print(f"Successfully deleted tag '{args.name}' from table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to delete tag: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_tag_list(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        result = catalog.list_tags_paged(table_identifier)
+        tags = result.elements
+        if not tags:
+            print(f"No tags found for table '{table_identifier}'.")
+        else:
+            for tag in tags:
+                print(tag)
+    except Exception as e:
+        print(f"Error: Failed to list tags: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_tag_rename(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+    from pypaimon.table.file_store_table import FileStoreTable
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table = catalog.get_table(table_identifier)
+    except Exception as e:
+        print(f"Error: Failed to get table '{table_identifier}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(table, FileStoreTable):
+        print(f"Error: Table '{table_identifier}' is not a FileStoreTable. "
+              f"Tag rename is not supported for this table type.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table.rename_tag(args.old_name, args.new_name)
+        print(f"Successfully renamed tag '{args.old_name}' to '{args.new_name}' "
+              f"on table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to rename tag: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def add_table_subcommands(table_parser):
     """
     Add table subcommands to the parser.
@@ -1170,3 +1280,45 @@ def add_table_subcommands(table_parser):
     update_comment_parser = alter_subparsers.add_parser('update-comment', help='Update table comment')
     update_comment_parser.add_argument('--comment', '-c', required=True, help='New table comment')
     update_comment_parser.set_defaults(func=cmd_table_alter)
+
+    # table tag-create command
+    tag_create_parser = table_subparsers.add_parser(
+        'tag-create', help='Create a tag on a table')
+    tag_create_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    tag_create_parser.add_argument(
+        '--name', '-n', required=True, help='Tag name to create')
+    tag_create_parser.add_argument(
+        '--snapshot-id', '-s', type=int, default=None,
+        help='Snapshot ID to tag (defaults to latest snapshot)')
+    tag_create_parser.add_argument(
+        '--ignore-if-exists', '-i', action='store_true',
+        help='Do not raise error if tag already exists')
+    tag_create_parser.set_defaults(func=cmd_table_tag_create)
+
+    # table tag-delete command
+    tag_delete_parser = table_subparsers.add_parser(
+        'tag-delete', help='Delete a tag from a table')
+    tag_delete_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    tag_delete_parser.add_argument(
+        '--name', '-n', required=True, help='Tag name to delete')
+    tag_delete_parser.set_defaults(func=cmd_table_tag_delete)
+
+    # table tag-list command
+    tag_list_parser = table_subparsers.add_parser(
+        'tag-list', help='List all tags of a table')
+    tag_list_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    tag_list_parser.set_defaults(func=cmd_table_tag_list)
+
+    # table tag-rename command
+    tag_rename_parser = table_subparsers.add_parser(
+        'tag-rename', help='Rename a tag on a table')
+    tag_rename_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    tag_rename_parser.add_argument(
+        '--old-name', required=True, help='Current tag name')
+    tag_rename_parser.add_argument(
+        '--new-name', required=True, help='New tag name')
+    tag_rename_parser.set_defaults(func=cmd_table_tag_rename)
