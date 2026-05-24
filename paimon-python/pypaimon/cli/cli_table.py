@@ -879,6 +879,120 @@ def cmd_table_drop_partition(args):
         sys.exit(1)
 
 
+def cmd_table_branch_create(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        catalog.create_branch(table_identifier, args.name, tag_name=args.tag)
+        msg = f"Successfully created branch '{args.name}' on table '{table_identifier}'"
+        if args.tag:
+            msg += f" from tag '{args.tag}'"
+        print(msg + ".")
+    except Exception as e:
+        print(f"Error: Failed to create branch: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_branch_delete(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        catalog.drop_branch(table_identifier, args.name)
+        print(f"Successfully deleted branch '{args.name}' from table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to delete branch: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_branch_list(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        branches = catalog.list_branches(table_identifier)
+        if not branches:
+            print(f"No branches found for table '{table_identifier}'.")
+        else:
+            for branch in branches:
+                print(branch)
+    except Exception as e:
+        print(f"Error: Failed to list branches: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_branch_rename(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        catalog.rename_branch(table_identifier, args.old_name, args.new_name)
+        print(f"Successfully renamed branch '{args.old_name}' to '{args.new_name}' "
+              f"on table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to rename branch: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_branch_fast_forward(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        catalog.fast_forward(table_identifier, args.name)
+        print(f"Successfully fast-forwarded branch '{args.name}' "
+              f"on table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to fast-forward branch: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def add_table_subcommands(table_parser):
     """
     Add table subcommands to the parser.
@@ -1170,3 +1284,51 @@ def add_table_subcommands(table_parser):
     update_comment_parser = alter_subparsers.add_parser('update-comment', help='Update table comment')
     update_comment_parser.add_argument('--comment', '-c', required=True, help='New table comment')
     update_comment_parser.set_defaults(func=cmd_table_alter)
+
+    # table branch-create command
+    branch_create_parser = table_subparsers.add_parser(
+        'branch-create', help='Create a branch on a table')
+    branch_create_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    branch_create_parser.add_argument(
+        '--name', '-n', required=True, help='Branch name to create')
+    branch_create_parser.add_argument(
+        '--tag', '-t', default=None,
+        help='Tag name to create the branch from (defaults to latest snapshot)')
+    branch_create_parser.set_defaults(func=cmd_table_branch_create)
+
+    # table branch-delete command
+    branch_delete_parser = table_subparsers.add_parser(
+        'branch-delete', help='Delete a branch from a table')
+    branch_delete_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    branch_delete_parser.add_argument(
+        '--name', '-n', required=True, help='Branch name to delete')
+    branch_delete_parser.set_defaults(func=cmd_table_branch_delete)
+
+    # table branch-list command
+    branch_list_parser = table_subparsers.add_parser(
+        'branch-list', help='List all branches of a table')
+    branch_list_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    branch_list_parser.set_defaults(func=cmd_table_branch_list)
+
+    # table branch-rename command
+    branch_rename_parser = table_subparsers.add_parser(
+        'branch-rename', help='Rename a branch on a table')
+    branch_rename_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    branch_rename_parser.add_argument(
+        '--old-name', required=True, help='Current branch name')
+    branch_rename_parser.add_argument(
+        '--new-name', required=True, help='New branch name')
+    branch_rename_parser.set_defaults(func=cmd_table_branch_rename)
+
+    # table branch-fast-forward command
+    branch_ff_parser = table_subparsers.add_parser(
+        'branch-fast-forward', help='Fast-forward the main branch to a given branch')
+    branch_ff_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    branch_ff_parser.add_argument(
+        '--name', '-n', required=True, help='Branch name to fast-forward')
+    branch_ff_parser.set_defaults(func=cmd_table_branch_fast_forward)
