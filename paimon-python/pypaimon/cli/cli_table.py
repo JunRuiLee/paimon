@@ -879,6 +879,152 @@ def cmd_table_drop_partition(args):
         sys.exit(1)
 
 
+def cmd_table_consumer_get(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+    from pypaimon.table.file_store_table import FileStoreTable
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table = catalog.get_table(table_identifier)
+    except Exception as e:
+        print(f"Error: Failed to get table '{table_identifier}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(table, FileStoreTable):
+        print(f"Error: Table '{table_identifier}' is not a FileStoreTable. "
+              f"Consumer operations are not supported for this table type.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        consumer_mgr = table.consumer_manager()
+        consumer = consumer_mgr.consumer(args.id)
+        if consumer is None:
+            print(f"Consumer '{args.id}' not found.", file=sys.stderr)
+            sys.exit(1)
+        print(f"{args.id}: next_snapshot={consumer.next_snapshot}")
+    except Exception as e:
+        print(f"Error: Failed to get consumer: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_consumer_list(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+    from pypaimon.table.file_store_table import FileStoreTable
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table = catalog.get_table(table_identifier)
+    except Exception as e:
+        print(f"Error: Failed to get table '{table_identifier}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(table, FileStoreTable):
+        print(f"Error: Table '{table_identifier}' is not a FileStoreTable. "
+              f"Consumer operations are not supported for this table type.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        consumer_mgr = table.consumer_manager()
+        consumers = consumer_mgr.consumers()
+        if not consumers:
+            print(f"No consumers found for table '{table_identifier}'.")
+        else:
+            for consumer_id, next_snapshot in sorted(consumers.items()):
+                print(f"{consumer_id}: next_snapshot={next_snapshot}")
+    except Exception as e:
+        print(f"Error: Failed to list consumers: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_consumer_delete(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+    from pypaimon.table.file_store_table import FileStoreTable
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table = catalog.get_table(table_identifier)
+    except Exception as e:
+        print(f"Error: Failed to get table '{table_identifier}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(table, FileStoreTable):
+        print(f"Error: Table '{table_identifier}' is not a FileStoreTable. "
+              f"Consumer operations are not supported for this table type.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        consumer_mgr = table.consumer_manager()
+        consumer_mgr.delete_consumer(args.id)
+        print(f"Successfully deleted consumer '{args.id}' from table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to delete consumer: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_table_consumer_reset(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+    from pypaimon.table.file_store_table import FileStoreTable
+    from pypaimon.consumer.consumer import Consumer
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table = catalog.get_table(table_identifier)
+    except Exception as e:
+        print(f"Error: Failed to get table '{table_identifier}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(table, FileStoreTable):
+        print(f"Error: Table '{table_identifier}' is not a FileStoreTable. "
+              f"Consumer operations are not supported for this table type.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        consumer_mgr = table.consumer_manager()
+        consumer = Consumer(next_snapshot=args.next_snapshot)
+        consumer_mgr.reset_consumer(args.id, consumer)
+        print(f"Successfully reset consumer '{args.id}' to next_snapshot={args.next_snapshot} "
+              f"on table '{table_identifier}'.")
+    except Exception as e:
+        print(f"Error: Failed to reset consumer: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def add_table_subcommands(table_parser):
     """
     Add table subcommands to the parser.
@@ -1170,3 +1316,40 @@ def add_table_subcommands(table_parser):
     update_comment_parser = alter_subparsers.add_parser('update-comment', help='Update table comment')
     update_comment_parser.add_argument('--comment', '-c', required=True, help='New table comment')
     update_comment_parser.set_defaults(func=cmd_table_alter)
+
+    # table consumer-get command
+    consumer_get_parser = table_subparsers.add_parser(
+        'consumer-get', help='Get a consumer by ID')
+    consumer_get_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    consumer_get_parser.add_argument(
+        '--id', required=True, help='Consumer ID')
+    consumer_get_parser.set_defaults(func=cmd_table_consumer_get)
+
+    # table consumer-list command
+    consumer_list_parser = table_subparsers.add_parser(
+        'consumer-list', help='List all consumers of a table')
+    consumer_list_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    consumer_list_parser.set_defaults(func=cmd_table_consumer_list)
+
+    # table consumer-delete command
+    consumer_delete_parser = table_subparsers.add_parser(
+        'consumer-delete', help='Delete a consumer by ID')
+    consumer_delete_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    consumer_delete_parser.add_argument(
+        '--id', required=True, help='Consumer ID to delete')
+    consumer_delete_parser.set_defaults(func=cmd_table_consumer_delete)
+
+    # table consumer-reset command
+    consumer_reset_parser = table_subparsers.add_parser(
+        'consumer-reset', help='Reset a consumer to a specific next snapshot')
+    consumer_reset_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    consumer_reset_parser.add_argument(
+        '--id', required=True, help='Consumer ID to reset')
+    consumer_reset_parser.add_argument(
+        '--next-snapshot', type=int, required=True,
+        help='Next snapshot ID for the consumer')
+    consumer_reset_parser.set_defaults(func=cmd_table_consumer_reset)
