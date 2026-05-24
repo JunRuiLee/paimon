@@ -879,6 +879,49 @@ def cmd_table_drop_partition(args):
         sys.exit(1)
 
 
+def cmd_table_rollback(args):
+    from pypaimon.cli.cli import load_catalog_config, create_catalog
+    from pypaimon.table.file_store_table import FileStoreTable
+
+    config = load_catalog_config(args.config)
+    catalog = create_catalog(config)
+    table_identifier = args.table
+
+    parts = table_identifier.split('.')
+    if len(parts) != 2:
+        print(f"Error: Invalid table identifier '{table_identifier}'. "
+              f"Expected format: 'database.table'", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        table = catalog.get_table(table_identifier)
+    except Exception as e:
+        print(f"Error: Failed to get table '{table_identifier}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(table, FileStoreTable):
+        print(f"Error: Table '{table_identifier}' is not a FileStoreTable. "
+              f"Rollback is not supported for this table type.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        if args.snapshot_id is not None:
+            table.rollback_to(args.snapshot_id)
+            print(f"Successfully rolled back table '{table_identifier}' "
+                  f"to snapshot {args.snapshot_id}.")
+        elif args.tag is not None:
+            table.rollback_to(args.tag)
+            print(f"Successfully rolled back table '{table_identifier}' "
+                  f"to tag '{args.tag}'.")
+        elif args.timestamp is not None:
+            table.rollback_to_timestamp(args.timestamp)
+            print(f"Successfully rolled back table '{table_identifier}' "
+                  f"to timestamp {args.timestamp}ms.")
+    except Exception as e:
+        print(f"Error: Failed to rollback: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def add_table_subcommands(table_parser):
     """
     Add table subcommands to the parser.
@@ -1170,3 +1213,20 @@ def add_table_subcommands(table_parser):
     update_comment_parser = alter_subparsers.add_parser('update-comment', help='Update table comment')
     update_comment_parser.add_argument('--comment', '-c', required=True, help='New table comment')
     update_comment_parser.set_defaults(func=cmd_table_alter)
+
+    # table rollback command
+    rollback_parser = table_subparsers.add_parser(
+        'rollback', help='Rollback a table to a snapshot, tag, or timestamp')
+    rollback_parser.add_argument(
+        'table', help='Table identifier in format: database.table')
+    rollback_target = rollback_parser.add_mutually_exclusive_group(required=True)
+    rollback_target.add_argument(
+        '--snapshot-id', '-s', type=int, default=None,
+        help='Snapshot ID to rollback to')
+    rollback_target.add_argument(
+        '--tag', '-t', default=None,
+        help='Tag name to rollback to')
+    rollback_target.add_argument(
+        '--timestamp', type=int, default=None,
+        help='Timestamp in milliseconds to rollback to')
+    rollback_parser.set_defaults(func=cmd_table_rollback)
