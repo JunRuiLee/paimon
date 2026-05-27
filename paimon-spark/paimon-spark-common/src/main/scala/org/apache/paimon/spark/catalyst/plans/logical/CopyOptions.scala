@@ -18,6 +18,25 @@
 
 package org.apache.paimon.spark.catalyst.plans.logical
 
+sealed trait OnErrorMode
+
+object OnErrorMode {
+  case object AbortStatement extends OnErrorMode
+  case object Continue extends OnErrorMode
+  case object SkipFile extends OnErrorMode
+
+  def parse(value: String): OnErrorMode = {
+    value.toUpperCase match {
+      case "ABORT_STATEMENT" => AbortStatement
+      case "CONTINUE" => Continue
+      case "SKIP_FILE" => SkipFile
+      case other =>
+        throw new IllegalArgumentException(
+          s"Unsupported ON_ERROR mode: $other. Supported modes: ABORT_STATEMENT, CONTINUE, SKIP_FILE")
+    }
+  }
+}
+
 sealed trait FileFormatType
 
 object FileFormatType {
@@ -29,8 +48,16 @@ object FileFormatType {
 
 case class CopyFileFormat(formatType: FileFormatType, options: Map[String, String]) {
 
-  def toSparkReaderOptions: Map[String, String] = {
-    val mapped = scala.collection.mutable.Map[String, String]("mode" -> "FAILFAST")
+  def toSparkReaderOptions(
+      onError: OnErrorMode = OnErrorMode.AbortStatement): Map[String, String] = {
+    val sparkMode = onError match {
+      case OnErrorMode.Continue => "PERMISSIVE"
+      case _ => "FAILFAST"
+    }
+    val mapped = scala.collection.mutable.Map[String, String]("mode" -> sparkMode)
+    if (onError == OnErrorMode.Continue) {
+      mapped("columnNameOfCorruptRecord") = "_corrupt_record"
+    }
     formatType match {
       case FileFormatType.CSV =>
         options.foreach {
@@ -56,6 +83,7 @@ case class CopyFileFormat(formatType: FileFormatType, options: Map[String, Strin
         }
       case FileFormatType.PARQUET =>
         mapped.remove("mode")
+        mapped.remove("columnNameOfCorruptRecord")
         options.foreach {
           case (k, v) =>
             k match {

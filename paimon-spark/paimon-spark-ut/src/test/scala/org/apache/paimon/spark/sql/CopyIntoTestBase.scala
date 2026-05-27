@@ -1422,4 +1422,314 @@ class CopyIntoTestBase extends PaimonSparkTestBase {
 
     spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_parquet_count")
   }
+
+  // ==================== ON_ERROR tests ====================
+
+  test("COPY INTO: ON_ERROR = CONTINUE skips bad CSV rows") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_csv")
+    spark.sql(s"CREATE TABLE $dbName0.copy_continue_csv (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data.csv", "1,Alice\nabc,Bob\n3,Charlie\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_continue_csv
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |ON_ERROR = CONTINUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(4) > 0)
+        assert(rows(0).getString(1) == "PARTIALLY_LOADED")
+
+        val data = spark.sql(s"SELECT * FROM $dbName0.copy_continue_csv ORDER BY id").collect()
+        assert(
+          data.length == 2,
+          s"Expected 2 rows but got ${data.length} — bad row should NOT be in table")
+        assert(data(0).getInt(0) == 1 && data(0).getString(1) == "Alice")
+        assert(data(1).getInt(0) == 3 && data(1).getString(1) == "Charlie")
+        assert(
+          !data.exists(r => r.getString(1) == "Bob"),
+          "Bad row with 'abc' as id should not be in the table")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_csv")
+  }
+
+  test("COPY INTO: ON_ERROR = CONTINUE with no errors behaves like ABORT") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_ok")
+    spark.sql(s"CREATE TABLE $dbName0.copy_continue_ok (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data.csv", "1,Alice\n2,Bob\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_continue_ok
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |ON_ERROR = CONTINUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getString(1) == "LOADED")
+        assert(rows(0).getLong(4) == 0L)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_continue_ok ORDER BY id"),
+          Seq(Row(1, "Alice"), Row(2, "Bob")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_ok")
+  }
+
+  test("COPY INTO: ON_ERROR = SKIP_FILE skips file with bad data") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile")
+    spark.sql(s"CREATE TABLE $dbName0.copy_skipfile (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "good.csv", "1,Alice\n2,Bob\n")
+        createCsvFile(dir, "bad.csv", "abc,Charlie\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_skipfile
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |ON_ERROR = SKIP_FILE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        val loaded = rows.filter(_.getString(1) == "LOADED")
+        val failed = rows.filter(_.getString(1) == "LOAD_FAILED")
+        assert(loaded.length == 1)
+        assert(failed.length == 1)
+        assert(failed(0).getLong(4) >= 1L)
+        assert(failed(0).getString(5) != null)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_skipfile ORDER BY id"),
+          Seq(Row(1, "Alice"), Row(2, "Bob")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile")
+  }
+
+  test("COPY INTO: ON_ERROR = SKIP_FILE with all good files") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile_ok")
+    spark.sql(s"CREATE TABLE $dbName0.copy_skipfile_ok (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "a.csv", "1,Alice\n")
+        createCsvFile(dir, "b.csv", "2,Bob\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_skipfile_ok
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |ON_ERROR = SKIP_FILE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.forall(_.getString(1) == "LOADED"))
+        assert(rows.length == 2)
+
+        assert(spark.sql(s"SELECT * FROM $dbName0.copy_skipfile_ok").count() == 2)
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile_ok")
+  }
+
+  test("COPY INTO: ON_ERROR = CONTINUE with JSON malformed records") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_json")
+    spark.sql(s"CREATE TABLE $dbName0.copy_continue_json (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id": "1", "name": "Alice"}
+            |{bad json here}
+            |{"id": "3", "name": "Charlie"}
+            |""".stripMargin
+        )
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_continue_json
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = JSON)
+                                  |ON_ERROR = CONTINUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows(0).getLong(4) > 0)
+
+        val data = spark.sql(s"SELECT * FROM $dbName0.copy_continue_json ORDER BY id").collect()
+        assert(
+          data.length == 2,
+          s"Expected 2 rows but got ${data.length} — malformed JSON should NOT be in table")
+        assert(data(0).getInt(0) == 1)
+        assert(data(1).getInt(0) == 3)
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_json")
+  }
+
+  test("COPY INTO: ON_ERROR = SKIP_FILE with JSON") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile_json")
+    spark.sql(s"CREATE TABLE $dbName0.copy_skipfile_json (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(dir, "good.json", """{"id": "1", "name": "Alice"}""" + "\n")
+        createJsonFile(dir, "bad.json", "{bad json}\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_skipfile_json
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = JSON)
+                                  |ON_ERROR = SKIP_FILE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        val loaded = rows.filter(_.getString(1) == "LOADED")
+        val failed = rows.filter(_.getString(1) == "LOAD_FAILED")
+        assert(loaded.length == 1)
+        assert(failed.length == 1)
+
+        checkAnswer(spark.sql(s"SELECT * FROM $dbName0.copy_skipfile_json"), Seq(Row(1, "Alice")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile_json")
+  }
+
+  test("COPY INTO: ABORT_STATEMENT still fails on bad data") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_abort_explicit")
+    spark.sql(s"CREATE TABLE $dbName0.copy_abort_explicit (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data.csv", "abc,Alice\n")
+
+        val e = intercept[Exception] {
+          spark.sql(s"""COPY INTO $dbName0.copy_abort_explicit
+                       |FROM '${dir.getAbsolutePath}'
+                       |FILE_FORMAT = (TYPE = CSV)
+                       |ON_ERROR = ABORT_STATEMENT
+                       |""".stripMargin)
+        }
+        assert(
+          e.getMessage.contains("Cast failure") ||
+            e.getMessage.contains("ABORT_STATEMENT") ||
+            e.getMessage.contains("CAST_INVALID_INPUT") ||
+            e.getCause != null)
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_abort_explicit")
+  }
+
+  test("COPY INTO: ON_ERROR = CONTINUE with Parquet cast errors") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_pq")
+    spark.sql(s"CREATE TABLE $dbName0.copy_continue_pq (id INT, name STRING)")
+
+    withParquetDir {
+      dir =>
+        import org.apache.spark.sql.types._
+        val schema = StructType(Seq(StructField("id", StringType), StructField("name", StringType)))
+        createParquetSingleFile(
+          dir,
+          "data.parquet",
+          Seq(Row("1", "Alice"), Row("abc", "Bad"), Row("3", "Charlie")),
+          schema)
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_continue_pq
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = PARQUET)
+                                  |ON_ERROR = CONTINUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(4) > 0)
+
+        val data = spark.sql(s"SELECT * FROM $dbName0.copy_continue_pq ORDER BY id").collect()
+        assert(
+          data.length == 2,
+          s"Expected 2 rows but got ${data.length} — bad row should NOT be in table")
+        assert(data(0).getInt(0) == 1)
+        assert(data(1).getInt(0) == 3)
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_pq")
+  }
+
+  test("COPY INTO: ON_ERROR = SKIP_FILE with Parquet") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile_pq")
+    spark.sql(s"CREATE TABLE $dbName0.copy_skipfile_pq (id INT, name STRING)")
+
+    withParquetDir {
+      dir =>
+        import org.apache.spark.sql.types._
+        val goodSchema =
+          StructType(Seq(StructField("id", IntegerType), StructField("name", StringType)))
+        createParquetSingleFile(
+          dir,
+          "good.parquet",
+          Seq(Row(1, "Alice"), Row(2, "Bob")),
+          goodSchema)
+
+        val badSchema =
+          StructType(Seq(StructField("id", StringType), StructField("name", StringType)))
+        createParquetSingleFile(dir, "bad.parquet", Seq(Row("abc", "Bad")), badSchema)
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_skipfile_pq
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = PARQUET)
+                                  |ON_ERROR = SKIP_FILE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        val loaded = rows.filter(_.getString(1) == "LOADED")
+        val failed = rows.filter(_.getString(1) == "LOAD_FAILED")
+        assert(loaded.length == 1)
+        assert(failed.length == 1)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_skipfile_pq ORDER BY id"),
+          Seq(Row(1, "Alice"), Row(2, "Bob")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_skipfile_pq")
+  }
+
+  test("COPY INTO: ON_ERROR = CONTINUE clean file has no first_error") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_multi")
+    spark.sql(s"CREATE TABLE $dbName0.copy_continue_multi (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "good.csv", "1,Alice\n2,Bob\n")
+        createCsvFile(dir, "bad.csv", "abc,Charlie\n3,Dave\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_continue_multi
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |ON_ERROR = CONTINUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        val goodFile = rows.find(_.getString(0) == "good.csv").get
+        val badFile = rows.find(_.getString(0) == "bad.csv").get
+
+        assert(goodFile.getString(1) == "LOADED")
+        assert(goodFile.getLong(4) == 0L)
+        assert(goodFile.isNullAt(5), "Clean file should have null first_error")
+
+        assert(badFile.getString(1) == "PARTIALLY_LOADED")
+        assert(badFile.getLong(4) > 0)
+        assert(!badFile.isNullAt(5), "Bad file should have non-null first_error")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_multi")
+  }
 }
