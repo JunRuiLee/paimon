@@ -32,17 +32,34 @@ case class CopyIntoTableCommand(
     force: Boolean,
     onError: OnErrorMode = OnErrorMode.AbortStatement,
     matchByColumnName: MatchByColumnName = MatchByColumnName.None,
-    purge: Boolean = false)
+    purge: Boolean = false,
+    validationMode: ValidationMode = ValidationMode.NoValidation)
   extends PaimonLeafCommand {
 
-  override def output: Seq[Attribute] = Seq(
-    AttributeReference("file_name", StringType, nullable = false)(),
-    AttributeReference("status", StringType, nullable = false)(),
-    AttributeReference("rows_loaded", LongType, nullable = false)(),
-    AttributeReference("rows_parsed", LongType, nullable = false)(),
-    AttributeReference("errors_seen", LongType, nullable = false)(),
-    AttributeReference("first_error", StringType, nullable = true)()
-  )
+  override def output: Seq[Attribute] = validationMode match {
+    case ValidationMode.NoValidation =>
+      Seq(
+        AttributeReference("file_name", StringType, nullable = false)(),
+        AttributeReference("status", StringType, nullable = false)(),
+        AttributeReference("rows_loaded", LongType, nullable = false)(),
+        AttributeReference("rows_parsed", LongType, nullable = false)(),
+        AttributeReference("errors_seen", LongType, nullable = false)(),
+        AttributeReference("first_error", StringType, nullable = true)()
+      )
+    case ValidationMode.ReturnRows(_) =>
+      Seq(
+        AttributeReference("file_name", StringType, nullable = false)(),
+        AttributeReference("row_number", LongType, nullable = false)(),
+        AttributeReference("row_data", StringType, nullable = false)()
+      )
+    case _ =>
+      Seq(
+        AttributeReference("file_name", StringType, nullable = false)(),
+        AttributeReference("row_number", LongType, nullable = false)(),
+        AttributeReference("error", StringType, nullable = false)(),
+        AttributeReference("rejected_record", StringType, nullable = true)()
+      )
+  }
 
   override def simpleString(maxFields: Int): String = {
     s"CopyIntoTable: table=$table, source=$sourcePath"

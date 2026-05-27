@@ -310,6 +310,7 @@ FILE_FORMAT = (TYPE = CSV [, option = value, ...])
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
 [MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
 [PURGE = TRUE|FALSE]
+[VALIDATION_MODE = { RETURN_n_ROWS | RETURN_ERRORS | RETURN_ALL_ERRORS }]
 ```
 
 **Basic import:**
@@ -350,6 +351,7 @@ FILE_FORMAT = (TYPE = JSON [, option = value, ...])
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
 [MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
 [PURGE = TRUE|FALSE]
+[VALIDATION_MODE = { RETURN_n_ROWS | RETURN_ERRORS | RETURN_ALL_ERRORS }]
 ```
 
 **Basic import:**
@@ -381,6 +383,7 @@ FILE_FORMAT = (TYPE = PARQUET [, option = value, ...])
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
 [MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
 [PURGE = TRUE|FALSE]
+[VALIDATION_MODE = { RETURN_n_ROWS | RETURN_ERRORS | RETURN_ALL_ERRORS }]
 ```
 
 **Basic import:**
@@ -560,6 +563,7 @@ FILE_FORMAT = (TYPE = PARQUET);
 | ON_ERROR | Error handling strategy. `ABORT_STATEMENT`: abort on any error. `CONTINUE`: skip bad rows and continue loading. `SKIP_FILE`: skip files that contain errors. | `ABORT_STATEMENT` |
 | MATCH_BY_COLUMN_NAME | Column matching strategy for JSON/Parquet. `NONE`: match by position. `CASE_SENSITIVE`: match by exact column name. `CASE_INSENSITIVE`: match by column name ignoring case. Not supported for CSV. Cannot be used with explicit column list. | `NONE` |
 | PURGE | Delete source files after successful loading. `TRUE`: delete loaded files. `FALSE`: keep files. Only successfully loaded files are deleted (best-effort). | `FALSE` |
+| VALIDATION_MODE | Validate data without loading. `RETURN_n_ROWS` (e.g. `RETURN_5_ROWS`): preview first n rows. `RETURN_ERRORS`: return first error per file. `RETURN_ALL_ERRORS`: return all errors. No data is written when set. | (none) |
 
 ### File Write Options
 

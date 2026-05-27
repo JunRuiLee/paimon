@@ -19,7 +19,7 @@
 package org.apache.paimon.spark.execution
 
 import org.apache.paimon.spark.SparkTable
-import org.apache.paimon.spark.catalyst.plans.logical.{CopyFileFormat, FileFormatType, MatchByColumnName, OnErrorMode}
+import org.apache.paimon.spark.catalyst.plans.logical.{CopyFileFormat, FileFormatType, MatchByColumnName, OnErrorMode, ValidationMode}
 import org.apache.paimon.spark.copyinto.{CopyLoadHistoryManager, CopyLoadRecord}
 import org.apache.paimon.spark.leafnode.PaimonLeafV2CommandExec
 import org.apache.paimon.table.FileStoreTable
@@ -51,6 +51,7 @@ case class CopyIntoTableExec(
     onError: OnErrorMode,
     matchByColumnName: MatchByColumnName,
     purge: Boolean,
+    validationMode: ValidationMode,
     out: Seq[Attribute])
   extends PaimonLeafV2CommandExec {
 
@@ -84,6 +85,16 @@ case class CopyIntoTableExec(
 
     if (filesToLoad.isEmpty) {
       return buildSkippedResults(skippedFiles)
+    }
+
+    validationMode match {
+      case ValidationMode.NoValidation => // fall through to existing logic
+      case ValidationMode.ReturnRows(n) =>
+        return runValidateReturnRows(n, paimonTable, filesToLoad)
+      case ValidationMode.ReturnErrors =>
+        return runValidateReturnErrors(paimonTable, filesToLoad, firstOnly = true)
+      case ValidationMode.ReturnAllErrors =>
+        return runValidateReturnErrors(paimonTable, filesToLoad, firstOnly = false)
     }
 
     onError match {
@@ -1053,6 +1064,104 @@ case class CopyIntoTableExec(
 
     val skippedResults = buildSkippedResults(skippedFiles)
     loadedResults ++ skippedResults
+  }
+
+  private def runValidateReturnRows(
+      n: Int,
+      paimonTable: FileStoreTable,
+      filesToLoad: Array[FileStatus]): Seq[InternalRow] = {
+    val filePaths = filesToLoad.map(_.getPath.toString)
+    val readerOptions = fileFormat.toSparkReaderOptions(OnErrorMode.AbortStatement)
+
+    val df = fileFormat.formatType match {
+      case FileFormatType.PARQUET => spark.read.options(readerOptions).parquet(filePaths: _*)
+      case FileFormatType.JSON => spark.read.options(readerOptions).json(filePaths: _*)
+      case _ =>
+        val tableSchema = paimonTable.schema()
+        val writableColumns = tableSchema.fieldNames().asScala.toSeq
+        val stringSchema = StructType(
+          (0 until writableColumns.size).map(
+            i => StructField(s"_c$i", StringType, nullable = true)))
+        spark.read.options(readerOptions).schema(stringSchema).csv(filePaths: _*)
+    }
+
+    val withFile = df.withColumn("__file__", input_file_name())
+    val limited = withFile.limit(n)
+    val rows = limited.collect()
+
+    rows.zipWithIndex.map {
+      case (row, idx) =>
+        val fileName = row.getAs[String]("__file__")
+        val baseName = new Path(fileName).getName
+        val rowJson = row.toSeq.dropRight(1).mkString(", ")
+        InternalRow(
+          UTF8String.fromString(baseName),
+          (idx + 1).toLong,
+          UTF8String.fromString(rowJson))
+    }.toSeq
+  }
+
+  private def runValidateReturnErrors(
+      paimonTable: FileStoreTable,
+      filesToLoad: Array[FileStatus],
+      firstOnly: Boolean): Seq[InternalRow] = {
+    val filePaths = filesToLoad.map(_.getPath.toString)
+    val corruptCol = "__corrupt_record__"
+    val readerOptions = fileFormat.toSparkReaderOptions(OnErrorMode.Continue) +
+      ("columnNameOfCorruptRecord" -> corruptCol)
+
+    val df = fileFormat.formatType match {
+      case FileFormatType.PARQUET =>
+        // Parquet has built-in schema, less likely to have parse errors
+        return Seq.empty
+      case FileFormatType.JSON =>
+        val tableSchema = paimonTable.schema()
+        val fields = tableSchema.fields().asScala.toSeq
+        val sparkFields = fields.map {
+          f =>
+            val sparkType = org.apache.paimon.spark.SparkTypeUtils.fromPaimonType(f.`type`())
+            StructField(f.name(), sparkType, nullable = f.`type`().isNullable)
+        } :+ StructField(corruptCol, StringType, nullable = true)
+        val schema = StructType(sparkFields)
+        spark.read.options(readerOptions).schema(schema).json(filePaths: _*)
+      case _ =>
+        val tableSchema = paimonTable.schema()
+        val writableColumns = tableSchema.fieldNames().asScala.toSeq
+        val stringSchema = StructType(
+          (0 until writableColumns.size).map(i => StructField(s"_c$i", StringType, nullable = true))
+            :+ StructField(corruptCol, StringType, nullable = true))
+        spark.read.options(readerOptions).schema(stringSchema).csv(filePaths: _*)
+    }
+
+    val withFile = df.withColumn("__file__", input_file_name())
+    val errorDf = withFile.filter(col(corruptCol).isNotNull)
+
+    val errorRows = if (firstOnly) {
+      import org.apache.spark.sql.expressions.Window
+      import org.apache.spark.sql.functions.row_number
+      val w = Window.partitionBy("__file__").orderBy(col(corruptCol))
+      errorDf
+        .withColumn("__rn__", row_number().over(w))
+        .filter(col("__rn__") === 1)
+        .drop("__rn__")
+        .collect()
+    } else {
+      errorDf.collect()
+    }
+
+    errorRows.zipWithIndex.map {
+      case (row, idx) =>
+        val fileIdx = row.fieldIndex("__file__")
+        val corruptIdx = row.fieldIndex(corruptCol)
+        val fileName =
+          if (!row.isNullAt(fileIdx)) new Path(row.getString(fileIdx)).getName else "unknown"
+        val corruptRecord = if (!row.isNullAt(corruptIdx)) row.getString(corruptIdx) else ""
+        InternalRow(
+          UTF8String.fromString(fileName),
+          (idx + 1).toLong,
+          UTF8String.fromString("Parse error: malformed record"),
+          UTF8String.fromString(corruptRecord))
+    }.toSeq
   }
 
   private def buildSkippedResults(files: Array[FileStatus]): Seq[InternalRow] = {

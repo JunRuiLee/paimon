@@ -2205,4 +2205,184 @@ class CopyIntoTestBase extends PaimonSparkTestBase {
 
     spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_no_purge")
   }
+
+  // ==================== VALIDATION_MODE tests ====================
+
+  test("COPY INTO: VALIDATION_MODE = RETURN_5_ROWS previews data without loading") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_rows")
+    spark.sql(s"CREATE TABLE $dbName0.copy_validate_rows (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data.csv", "1,Alice\n2,Bob\n3,Carol\n4,Dave\n5,Eve\n6,Frank\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_validate_rows
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |VALIDATION_MODE = RETURN_5_ROWS
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 5, "Should return exactly 5 rows")
+        assert(result.columns.toSeq == Seq("file_name", "row_number", "row_data"))
+
+        // Verify no data was loaded
+        val tableRows = spark.sql(s"SELECT * FROM $dbName0.copy_validate_rows").collect()
+        assert(tableRows.isEmpty, "No data should be loaded in validation mode")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_rows")
+  }
+
+  test("COPY INTO: VALIDATION_MODE = RETURN_ERRORS returns parse errors") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_errors")
+    spark.sql(s"CREATE TABLE $dbName0.copy_validate_errors (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "bad.csv", "1,Alice\nnot_valid\n3,Carol\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_validate_errors
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |VALIDATION_MODE = RETURN_ERRORS
+                                  |""".stripMargin)
+
+        assert(result.columns.toSeq == Seq("file_name", "row_number", "error", "rejected_record"))
+
+        // Verify no data was loaded
+        val tableRows = spark.sql(s"SELECT * FROM $dbName0.copy_validate_errors").collect()
+        assert(tableRows.isEmpty, "No data should be loaded in validation mode")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_errors")
+  }
+
+  test("COPY INTO: VALIDATION_MODE = RETURN_ALL_ERRORS returns all errors") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_all_errors")
+    spark.sql(s"CREATE TABLE $dbName0.copy_validate_all_errors (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "file1.csv", "bad_row_1\n1,Alice\n")
+        createCsvFile(dir, "file2.csv", "bad_row_2\n2,Bob\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_validate_all_errors
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |VALIDATION_MODE = RETURN_ALL_ERRORS
+                                  |""".stripMargin)
+
+        assert(result.columns.toSeq == Seq("file_name", "row_number", "error", "rejected_record"))
+
+        // Verify no data was loaded
+        val tableRows = spark.sql(s"SELECT * FROM $dbName0.copy_validate_all_errors").collect()
+        assert(tableRows.isEmpty, "No data should be loaded in validation mode")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_all_errors")
+  }
+
+  test("COPY INTO: VALIDATION_MODE = RETURN_3_ROWS with JSON") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_json")
+    spark.sql(s"CREATE TABLE $dbName0.copy_validate_json (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id":1,"name":"Alice"}
+            |{"id":2,"name":"Bob"}
+            |{"id":3,"name":"Carol"}
+            |{"id":4,"name":"Dave"}
+            |""".stripMargin
+        )
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_validate_json
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = JSON)
+                                  |VALIDATION_MODE = RETURN_3_ROWS
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 3, "Should return exactly 3 rows")
+
+        // Verify no data was loaded
+        val tableRows = spark.sql(s"SELECT * FROM $dbName0.copy_validate_json").collect()
+        assert(tableRows.isEmpty, "No data should be loaded in validation mode")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_validate_json")
+  }
+
+  // ==================== FROM (SELECT ...) export tests ====================
+
+  test("COPY INTO location: FROM (SELECT ...) with CSV") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query")
+    spark.sql(s"CREATE TABLE $dbName0.copy_export_query (id INT, name STRING, age INT)")
+    spark.sql(
+      s"INSERT INTO $dbName0.copy_export_query VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Carol', 35)")
+
+    withCsvDir {
+      dir =>
+        val exportPath = new File(dir, "query_export").getAbsolutePath
+        val result =
+          spark.sql(s"""COPY INTO '$exportPath'
+                       |FROM ('SELECT id, name FROM $dbName0.copy_export_query WHERE age > 28')
+                       |FILE_FORMAT = (TYPE = CSV)
+                       |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(2) == 2, "Should export 2 rows (Alice age 30 and Carol age 35)")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query")
+  }
+
+  test("COPY INTO location: FROM (SELECT ...) with JSON") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_json")
+    spark.sql(s"CREATE TABLE $dbName0.copy_export_query_json (id INT, name STRING)")
+    spark.sql(s"INSERT INTO $dbName0.copy_export_query_json VALUES (1, 'Alice'), (2, 'Bob')")
+
+    withJsonDir {
+      dir =>
+        val exportPath = new File(dir, "json_export").getAbsolutePath
+        val result =
+          spark.sql(s"""COPY INTO '$exportPath'
+                       |FROM ('SELECT * FROM $dbName0.copy_export_query_json WHERE id = 1')
+                       |FILE_FORMAT = (TYPE = JSON)
+                       |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(2) == 1, "Should export 1 row")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_json")
+  }
+
+  test("COPY INTO location: FROM (SELECT ...) with aggregation") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_agg")
+    spark.sql(s"CREATE TABLE $dbName0.copy_export_query_agg (dept STRING, salary INT)")
+    spark.sql(
+      s"INSERT INTO $dbName0.copy_export_query_agg VALUES ('A', 100), ('A', 200), ('B', 150)")
+
+    withCsvDir {
+      dir =>
+        val exportPath = new File(dir, "agg_export").getAbsolutePath
+        val result = spark.sql(
+          s"""COPY INTO '$exportPath'
+             |FROM ('SELECT dept, SUM(salary) AS total FROM $dbName0.copy_export_query_agg GROUP BY dept')
+             |FILE_FORMAT = (TYPE = CSV)
+             |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(2) == 2, "Should export 2 aggregated rows")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_agg")
+  }
 }

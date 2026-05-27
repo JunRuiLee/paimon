@@ -81,7 +81,8 @@ statement
       forceClause?
       onErrorClause?
       matchByColumnNameClause?
-      purgeClause?                                                                          #copyIntoTable
+      purgeClause?
+      validationModeClause?                                                                  #copyIntoTable
     | COPY INTO targetPath=STRING
       FROM multipartIdentifier
       fileFormatClause
@@ -156,6 +157,16 @@ matchByColumnNameClause
   : MATCH_BY_COLUMN_NAME '=' (NONE | CASE_SENSITIVE | CASE_INSENSITIVE)
   ;
 
+validationModeClause
+  : VALIDATION_MODE '=' validationModeValue
+  ;
+
+validationModeValue
+  : RETURN_ERRORS
+  | RETURN_ALL_ERRORS
+  | identifier
+  ;
+
 overwriteClause
   : OVERWRITE '=' booleanValue
   ;
@@ -217,6 +228,7 @@ nonReserved
     | MAP
     | COPY | INTO | FROM | FILE_FORMAT | PATTERN | FORCE | ON_ERROR | ABORT_STATEMENT | CONTINUE | SKIP_FILE | OVERWRITE | PURGE
     | MATCH_BY_COLUMN_NAME | CASE_SENSITIVE | CASE_INSENSITIVE | NONE
+    | VALIDATION_MODE | RETURN_ERRORS | RETURN_ALL_ERRORS
     | CSV
     | JSON
     | PARQUET
@@ -262,6 +274,9 @@ CONTINUE: 'CONTINUE';
 SKIP_FILE: 'SKIP_FILE';
 OVERWRITE: 'OVERWRITE';
 PURGE: 'PURGE';
+VALIDATION_MODE: 'VALIDATION_MODE';
+RETURN_ERRORS: 'RETURN_ERRORS';
+RETURN_ALL_ERRORS: 'RETURN_ALL_ERRORS';
 CSV: 'CSV';
 JSON: 'JSON';
 PARQUET: 'PARQUET';

@@ -158,6 +158,7 @@ case class PaimonStrategy(spark: SparkSession)
           _,
           _,
           _,
+          _,
           _) =>
       CopyIntoTableExec(
         spark,
@@ -171,6 +172,7 @@ case class PaimonStrategy(spark: SparkSession)
         c.onError,
         c.matchByColumnName,
         c.purge,
+        c.validationMode,
         c.output) :: Nil
 
     case c @ CopyIntoLocationCommand(_, _, Some(_), _, _) =>

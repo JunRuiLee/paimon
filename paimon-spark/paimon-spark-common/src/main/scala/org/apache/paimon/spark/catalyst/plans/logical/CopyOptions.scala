@@ -56,6 +56,26 @@ object OnErrorMode {
   }
 }
 
+sealed trait ValidationMode
+
+object ValidationMode {
+  case object NoValidation extends ValidationMode
+  case class ReturnRows(n: Int) extends ValidationMode
+  case object ReturnErrors extends ValidationMode
+  case object ReturnAllErrors extends ValidationMode
+
+  def parse(value: String): ValidationMode = {
+    val returnRowsPattern = "RETURN_(\\d+)_ROWS".r
+    value.toUpperCase match {
+      case returnRowsPattern(n) => ReturnRows(n.toInt)
+      case "RETURN_ERRORS" => ReturnErrors
+      case "RETURN_ALL_ERRORS" => ReturnAllErrors
+      case other =>
+        throw new IllegalArgumentException(s"Unsupported VALIDATION_MODE: $other")
+    }
+  }
+}
+
 sealed trait FileFormatType
 
 object FileFormatType {

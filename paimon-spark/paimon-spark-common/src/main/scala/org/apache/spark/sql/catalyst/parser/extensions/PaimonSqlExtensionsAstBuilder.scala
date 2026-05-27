@@ -180,6 +180,15 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
         }
         .getOrElse(MatchByColumnName.None)
       val purge = Option(ctx.purgeClause()).exists(_.booleanValue().TRUE() != null)
+      val validationMode = Option(ctx.validationModeClause())
+        .map {
+          clause =>
+            val value = clause.validationModeValue()
+            if (value.RETURN_ERRORS() != null) ValidationMode.ReturnErrors
+            else if (value.RETURN_ALL_ERRORS() != null) ValidationMode.ReturnAllErrors
+            else ValidationMode.parse(value.identifier().getText)
+        }
+        .getOrElse(ValidationMode.NoValidation)
       logical.CopyIntoTableCommand(
         table,
         columns,
@@ -189,7 +198,8 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
         force,
         onError,
         matchByColumnName,
-        purge)
+        purge,
+        validationMode)
     }
 
   /** Create a COPY INTO LOCATION (export) logical command. */
