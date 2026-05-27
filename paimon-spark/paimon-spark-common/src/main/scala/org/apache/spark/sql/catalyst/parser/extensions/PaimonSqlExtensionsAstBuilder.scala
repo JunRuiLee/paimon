@@ -197,7 +197,22 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
     val table = typedVisit[Seq[String]](ctx.multipartIdentifier)
     val fileFormat = buildFileFormat(ctx.fileFormatClause())
     val overwrite = Option(ctx.overwriteClause()).exists(_.booleanValue().TRUE() != null)
-    logical.CopyIntoLocationCommand(targetPath, table, fileFormat, overwrite)
+    logical.CopyIntoLocationCommand(targetPath, table, query = None, fileFormat, overwrite)
+  }
+
+  /** Create a COPY INTO LOCATION FROM (query) (export) logical command. */
+  override def visitCopyIntoLocationFromQuery(
+      ctx: CopyIntoLocationFromQueryContext): logical.CopyIntoLocationCommand = withOrigin(ctx) {
+    val targetPath = unquoteString(ctx.targetPath.getText)
+    val query = unquoteString(ctx.query.getText)
+    val fileFormat = buildFileFormat(ctx.fileFormatClause())
+    val overwrite = Option(ctx.overwriteClause()).exists(_.booleanValue().TRUE() != null)
+    logical.CopyIntoLocationCommand(
+      targetPath,
+      table = Seq.empty,
+      query = Some(query),
+      fileFormat,
+      overwrite)
   }
 
   private def buildFileFormat(ctx: FileFormatClauseContext): CopyFileFormat = {

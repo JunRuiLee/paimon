@@ -404,7 +404,7 @@ Parquet columns are matched **by column name** (not by position). Extra columns 
 
 ```sql
 COPY INTO 'target_path'
-FROM table_name
+FROM { table_name | ('SELECT ...') }
 FILE_FORMAT = (TYPE = CSV [, option = value, ...])
 [OVERWRITE = TRUE|FALSE]
 ```
@@ -418,11 +418,19 @@ FILE_FORMAT = (TYPE = CSV, HEADER = TRUE, FIELD_DELIMITER = ',')
 OVERWRITE = TRUE;
 ```
 
+**Write from query:**
+
+```sql
+COPY INTO '/export/active_users/'
+FROM ('SELECT id, name FROM my_db.users WHERE active = TRUE')
+FILE_FORMAT = (TYPE = CSV, HEADER = TRUE);
+```
+
 ### Write JSON Files
 
 ```sql
 COPY INTO 'target_path'
-FROM table_name
+FROM { table_name | ('SELECT ...') }
 FILE_FORMAT = (TYPE = JSON [, option = value, ...])
 [OVERWRITE = TRUE|FALSE]
 ```
@@ -436,11 +444,19 @@ FILE_FORMAT = (TYPE = JSON)
 OVERWRITE = TRUE;
 ```
 
+**JSON export from query:**
+
+```sql
+COPY INTO '/export/recent_events/'
+FROM ('SELECT * FROM my_db.events WHERE event_date > "2024-01-01"')
+FILE_FORMAT = (TYPE = JSON);
+```
+
 ### Write Parquet Files
 
 ```sql
 COPY INTO 'target_path'
-FROM table_name
+FROM { table_name | ('SELECT ...') }
 FILE_FORMAT = (TYPE = PARQUET [, option = value, ...])
 [OVERWRITE = TRUE|FALSE]
 ```
@@ -461,6 +477,14 @@ COPY INTO '/export/data_compressed/'
 FROM my_db.events
 FILE_FORMAT = (TYPE = PARQUET, COMPRESSION = GZIP)
 OVERWRITE = TRUE;
+```
+
+**Parquet export from aggregation query:**
+
+```sql
+COPY INTO '/export/summary/'
+FROM ('SELECT dept, COUNT(*) AS cnt FROM my_db.employees GROUP BY dept')
+FILE_FORMAT = (TYPE = PARQUET);
 ```
 
 ### FILE_FORMAT Options
@@ -587,7 +611,6 @@ By default (`FORCE = FALSE`), COPY INTO tracks which files have been successfull
 ### Limitations
 
 - Only **CSV**, **JSON**, and **Parquet** formats are supported.
-- Writing files only supports `FROM table_name`; `FROM (SELECT ...)` is not supported.
 - `SINGLE = TRUE` (single-file output) is not supported.
 - File format options must be specified inline in `FILE_FORMAT = (...)`.
 - File listing is **non-recursive**: only direct files under the source path are processed. Subdirectories are ignored.

@@ -2027,4 +2027,74 @@ class CopyIntoTestBase extends PaimonSparkTestBase {
 
     spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_skipfile")
   }
+
+  // ==================== FROM (SELECT ...) export tests ====================
+
+  test("COPY INTO location: FROM (SELECT ...) with CSV") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query")
+    spark.sql(s"CREATE TABLE $dbName0.copy_export_query (id INT, name STRING, age INT)")
+    spark.sql(
+      s"INSERT INTO $dbName0.copy_export_query VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Carol', 35)")
+
+    withCsvDir {
+      dir =>
+        val exportPath = new File(dir, "query_export").getAbsolutePath
+        val result =
+          spark.sql(s"""COPY INTO '$exportPath'
+                       |FROM ('SELECT id, name FROM $dbName0.copy_export_query WHERE age > 28')
+                       |FILE_FORMAT = (TYPE = CSV)
+                       |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(2) == 2, "Should export 2 rows (Alice age 30 and Carol age 35)")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query")
+  }
+
+  test("COPY INTO location: FROM (SELECT ...) with JSON") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_json")
+    spark.sql(s"CREATE TABLE $dbName0.copy_export_query_json (id INT, name STRING)")
+    spark.sql(s"INSERT INTO $dbName0.copy_export_query_json VALUES (1, 'Alice'), (2, 'Bob')")
+
+    withJsonDir {
+      dir =>
+        val exportPath = new File(dir, "json_export").getAbsolutePath
+        val result =
+          spark.sql(s"""COPY INTO '$exportPath'
+                       |FROM ('SELECT * FROM $dbName0.copy_export_query_json WHERE id = 1')
+                       |FILE_FORMAT = (TYPE = JSON)
+                       |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(2) == 1, "Should export 1 row")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_json")
+  }
+
+  test("COPY INTO location: FROM (SELECT ...) with aggregation") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_agg")
+    spark.sql(s"CREATE TABLE $dbName0.copy_export_query_agg (dept STRING, salary INT)")
+    spark.sql(
+      s"INSERT INTO $dbName0.copy_export_query_agg VALUES ('A', 100), ('A', 200), ('B', 150)")
+
+    withCsvDir {
+      dir =>
+        val exportPath = new File(dir, "agg_export").getAbsolutePath
+        val result = spark.sql(
+          s"""COPY INTO '$exportPath'
+             |FROM ('SELECT dept, SUM(salary) AS total FROM $dbName0.copy_export_query_agg GROUP BY dept')
+             |FILE_FORMAT = (TYPE = CSV)
+             |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.length == 1)
+        assert(rows(0).getLong(2) == 2, "Should export 2 aggregated rows")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_agg")
+  }
 }

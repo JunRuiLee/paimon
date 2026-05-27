@@ -26,6 +26,7 @@ import org.apache.spark.sql.types.{IntegerType, LongType, StringType}
 case class CopyIntoLocationCommand(
     targetPath: String,
     table: Seq[String],
+    query: Option[String],
     fileFormat: CopyFileFormat,
     overwrite: Boolean)
   extends PaimonLeafCommand {
@@ -37,6 +38,10 @@ case class CopyIntoLocationCommand(
   )
 
   override def simpleString(maxFields: Int): String = {
-    s"CopyIntoLocation: target=$targetPath, source=$table"
+    val source = query match {
+      case Some(q) => s"query=$q"
+      case None => s"table=$table"
+    }
+    s"CopyIntoLocation: target=$targetPath, source=$source"
   }
 }

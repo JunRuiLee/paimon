@@ -85,6 +85,10 @@ statement
       FROM multipartIdentifier
       fileFormatClause
       overwriteClause?                                                                      #copyIntoLocation
+    | COPY INTO targetPath=STRING
+      FROM '(' query=STRING ')'
+      fileFormatClause
+      overwriteClause?                                                                      #copyIntoLocationFromQuery
   ;
 
 callArgument

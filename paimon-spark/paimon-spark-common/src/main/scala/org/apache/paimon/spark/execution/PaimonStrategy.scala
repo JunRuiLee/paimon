@@ -171,12 +171,24 @@ case class PaimonStrategy(spark: SparkSession)
         c.matchByColumnName,
         c.output) :: Nil
 
-    case c @ CopyIntoLocationCommand(_, PaimonCatalogAndIdentifier(catalog, ident), _, _) =>
+    case c @ CopyIntoLocationCommand(_, _, Some(_), _, _) =>
+      CopyIntoLocationExec(
+        spark,
+        null,
+        null,
+        c.targetPath,
+        c.query,
+        c.fileFormat,
+        c.overwrite,
+        c.output) :: Nil
+
+    case c @ CopyIntoLocationCommand(_, PaimonCatalogAndIdentifier(catalog, ident), None, _, _) =>
       CopyIntoLocationExec(
         spark,
         catalog,
         ident,
         c.targetPath,
+        c.query,
         c.fileFormat,
         c.overwrite,
         c.output) :: Nil

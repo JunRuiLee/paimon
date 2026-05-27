@@ -33,6 +33,7 @@ case class CopyIntoLocationExec(
     catalog: TableCatalog,
     ident: Identifier,
     targetPath: String,
+    query: Option[String],
     fileFormat: CopyFileFormat,
     overwrite: Boolean,
     out: Seq[Attribute])
@@ -43,8 +44,12 @@ case class CopyIntoLocationExec(
   override protected def run(): Seq[InternalRow] = {
     fileFormat.validateForExport()
 
-    val tableName = CopyIntoUtils.quoteIdentifier(catalog.name(), ident)
-    val df = spark.table(tableName)
+    val df = query match {
+      case Some(q) => spark.sql(q)
+      case None =>
+        val tableName = CopyIntoUtils.quoteIdentifier(catalog.name(), ident)
+        spark.table(tableName)
+    }
 
     val rowCount = df.count()
 
