@@ -50,6 +50,7 @@ case class CopyIntoTableExec(
     force: Boolean,
     onError: OnErrorMode,
     matchByColumnName: MatchByColumnName,
+    purge: Boolean,
     out: Seq[Attribute])
   extends PaimonLeafV2CommandExec {
 
@@ -101,7 +102,7 @@ case class CopyIntoTableExec(
           case FileFormatType.PARQUET => true
           case _ => false
         }
-        if (useStructuredImport) {
+        val results = if (useStructuredImport) {
           runStructuredImport(
             paimonTable,
             filePaths,
@@ -122,6 +123,8 @@ case class CopyIntoTableExec(
             skippedFiles,
             readerOptions)
         }
+        purgeLoadedFiles(filesToLoad)
+        results
     }
   }
 
@@ -138,6 +141,7 @@ case class CopyIntoTableExec(
     val readerOptions = fileFormat.toSparkReaderOptions(OnErrorMode.AbortStatement)
 
     val results = ArrayBuffer[InternalRow]()
+    val successfullyLoaded = ArrayBuffer[FileStatus]()
 
     filesToLoad.foreach {
       fileStatus =>
@@ -171,6 +175,7 @@ case class CopyIntoTableExec(
 
         result match {
           case Success(rowCount) =>
+            successfullyLoaded += fileStatus
             val snapshotId = paimonTable.snapshotManager().latestSnapshotId()
             historyManager.recordLoaded(
               CopyLoadRecord(
@@ -199,6 +204,7 @@ case class CopyIntoTableExec(
         }
     }
 
+    purgeLoadedFiles(successfullyLoaded.toArray)
     results.toSeq ++ buildSkippedResults(skippedFiles)
   }
 
@@ -1096,6 +1102,21 @@ case class CopyIntoTableExec(
       candidate = "_" + candidate
     }
     candidate
+  }
+
+  private def purgeLoadedFiles(loadedFiles: Array[FileStatus]): Unit = {
+    if (!purge || loadedFiles.isEmpty) return
+    val hadoopConf = spark.sessionState.newHadoopConf()
+    loadedFiles.foreach {
+      fileStatus =>
+        try {
+          val path = fileStatus.getPath
+          val fs = path.getFileSystem(hadoopConf)
+          fs.delete(path, false)
+        } catch {
+          case _: Exception => // best-effort, ignore failures
+        }
+    }
   }
 }
 

@@ -2097,4 +2097,112 @@ class CopyIntoTestBase extends PaimonSparkTestBase {
 
     spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_export_query_agg")
   }
+
+  // ==================== PURGE tests ====================
+
+  test("COPY INTO: PURGE = TRUE deletes source files after load") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_purge")
+    spark.sql(s"CREATE TABLE $dbName0.copy_purge (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data1.csv", "1,Alice\n2,Bob\n")
+        createCsvFile(dir, "data2.csv", "3,Carol\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_purge
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |PURGE = TRUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows.forall(_.getString(1) == "LOADED"))
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_purge ORDER BY id"),
+          Seq(Row(1, "Alice"), Row(2, "Bob"), Row(3, "Carol")))
+
+        // Source files should be deleted
+        assert(dir.listFiles().length == 0, "Source files should be purged after load")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_purge")
+  }
+
+  test("COPY INTO: PURGE = FALSE keeps source files") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_purge_false")
+    spark.sql(s"CREATE TABLE $dbName0.copy_purge_false (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data1.csv", "1,Alice\n")
+
+        spark.sql(s"""COPY INTO $dbName0.copy_purge_false
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = CSV)
+                     |PURGE = FALSE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_purge_false ORDER BY id"),
+          Seq(Row(1, "Alice")))
+
+        // Source files should remain
+        assert(dir.listFiles().length == 1, "Source files should remain when PURGE = FALSE")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_purge_false")
+  }
+
+  test("COPY INTO: PURGE = TRUE with SKIP_FILE only deletes successful files") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_purge_skip")
+    spark.sql(s"CREATE TABLE $dbName0.copy_purge_skip (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "good.csv", "1,Alice\n2,Bob\n")
+        createCsvFile(dir, "bad.csv", "not_a_number,Carol\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_purge_skip
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = CSV)
+                                  |ON_ERROR = SKIP_FILE
+                                  |PURGE = TRUE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        val goodFile = rows.find(_.getString(0) == "good.csv").get
+        val badFile = rows.find(_.getString(0) == "bad.csv").get
+
+        assert(goodFile.getString(1) == "LOADED")
+        assert(badFile.getString(1) == "LOAD_FAILED")
+
+        // Only the good file should be deleted
+        val remaining = dir.listFiles()
+        assert(remaining.length == 1, "Only failed file should remain")
+        assert(remaining(0).getName == "bad.csv", "The failed file should still exist")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_purge_skip")
+  }
+
+  test("COPY INTO: default behavior keeps source files (no PURGE clause)") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_no_purge")
+    spark.sql(s"CREATE TABLE $dbName0.copy_no_purge (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data.csv", "1,Alice\n")
+
+        spark.sql(s"""COPY INTO $dbName0.copy_no_purge
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = CSV)
+                     |""".stripMargin)
+
+        // Source file should remain (default is PURGE = FALSE)
+        assert(dir.listFiles().length == 1, "Source files should remain by default")
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_no_purge")
+  }
 }

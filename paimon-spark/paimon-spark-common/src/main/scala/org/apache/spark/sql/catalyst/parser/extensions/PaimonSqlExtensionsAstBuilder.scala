@@ -179,6 +179,7 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
             else MatchByColumnName.None
         }
         .getOrElse(MatchByColumnName.None)
+      val purge = Option(ctx.purgeClause()).exists(_.booleanValue().TRUE() != null)
       logical.CopyIntoTableCommand(
         table,
         columns,
@@ -187,7 +188,8 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
         pattern,
         force,
         onError,
-        matchByColumnName)
+        matchByColumnName,
+        purge)
     }
 
   /** Create a COPY INTO LOCATION (export) logical command. */

@@ -80,7 +80,8 @@ statement
       patternClause?
       forceClause?
       onErrorClause?
-      matchByColumnNameClause?                                                                #copyIntoTable
+      matchByColumnNameClause?
+      purgeClause?                                                                          #copyIntoTable
     | COPY INTO targetPath=STRING
       FROM multipartIdentifier
       fileFormatClause
@@ -159,6 +160,10 @@ overwriteClause
   : OVERWRITE '=' booleanValue
   ;
 
+purgeClause
+  : PURGE '=' booleanValue
+  ;
+
 expression
     : constant
     | stringMap
@@ -210,7 +215,7 @@ nonReserved
     | REPLACE | RETAIN | VERSION | TAG
     | TRUE | FALSE
     | MAP
-    | COPY | INTO | FROM | FILE_FORMAT | PATTERN | FORCE | ON_ERROR | ABORT_STATEMENT | CONTINUE | SKIP_FILE | OVERWRITE
+    | COPY | INTO | FROM | FILE_FORMAT | PATTERN | FORCE | ON_ERROR | ABORT_STATEMENT | CONTINUE | SKIP_FILE | OVERWRITE | PURGE
     | MATCH_BY_COLUMN_NAME | CASE_SENSITIVE | CASE_INSENSITIVE | NONE
     | CSV
     | JSON
@@ -256,6 +261,7 @@ ABORT_STATEMENT: 'ABORT_STATEMENT';
 CONTINUE: 'CONTINUE';
 SKIP_FILE: 'SKIP_FILE';
 OVERWRITE: 'OVERWRITE';
+PURGE: 'PURGE';
 CSV: 'CSV';
 JSON: 'JSON';
 PARQUET: 'PARQUET';

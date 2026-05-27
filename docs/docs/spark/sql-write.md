@@ -309,6 +309,7 @@ FILE_FORMAT = (TYPE = CSV [, option = value, ...])
 [FORCE = TRUE|FALSE]
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
 [MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
+[PURGE = TRUE|FALSE]
 ```
 
 **Basic import:**
@@ -348,6 +349,7 @@ FILE_FORMAT = (TYPE = JSON [, option = value, ...])
 [FORCE = TRUE|FALSE]
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
 [MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
+[PURGE = TRUE|FALSE]
 ```
 
 **Basic import:**
@@ -378,6 +380,7 @@ FILE_FORMAT = (TYPE = PARQUET [, option = value, ...])
 [FORCE = TRUE|FALSE]
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
 [MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
+[PURGE = TRUE|FALSE]
 ```
 
 **Basic import:**
@@ -556,6 +559,7 @@ FILE_FORMAT = (TYPE = PARQUET);
 | FORCE | `FALSE`: skip files already loaded (idempotent). `TRUE`: reload all files. | `FALSE` |
 | ON_ERROR | Error handling strategy. `ABORT_STATEMENT`: abort on any error. `CONTINUE`: skip bad rows and continue loading. `SKIP_FILE`: skip files that contain errors. | `ABORT_STATEMENT` |
 | MATCH_BY_COLUMN_NAME | Column matching strategy for JSON/Parquet. `NONE`: match by position. `CASE_SENSITIVE`: match by exact column name. `CASE_INSENSITIVE`: match by column name ignoring case. Not supported for CSV. Cannot be used with explicit column list. | `NONE` |
+| PURGE | Delete source files after successful loading. `TRUE`: delete loaded files. `FALSE`: keep files. Only successfully loaded files are deleted (best-effort). | `FALSE` |
 
 ### File Write Options
 
