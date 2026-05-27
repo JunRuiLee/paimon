@@ -149,7 +149,15 @@ case class PaimonStrategy(spark: SparkSession)
           partitionPredicate: Option[PartitionPredicate]) =>
       TruncatePaimonTableWithFilterExec(table, partitionPredicate) :: Nil
 
-    case c @ CopyIntoTableCommand(PaimonCatalogAndIdentifier(catalog, ident), _, _, _, _, _, _) =>
+    case c @ CopyIntoTableCommand(
+          PaimonCatalogAndIdentifier(catalog, ident),
+          _,
+          _,
+          _,
+          _,
+          _,
+          _,
+          _) =>
       CopyIntoTableExec(
         spark,
         catalog,
@@ -160,6 +168,7 @@ case class PaimonStrategy(spark: SparkSession)
         c.pattern,
         c.force,
         c.onError,
+        c.matchByColumnName,
         c.output) :: Nil
 
     case c @ CopyIntoLocationCommand(_, PaimonCatalogAndIdentifier(catalog, ident), _, _) =>

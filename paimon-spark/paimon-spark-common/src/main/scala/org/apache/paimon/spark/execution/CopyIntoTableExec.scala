@@ -19,7 +19,7 @@
 package org.apache.paimon.spark.execution
 
 import org.apache.paimon.spark.SparkTable
-import org.apache.paimon.spark.catalyst.plans.logical.{CopyFileFormat, FileFormatType, OnErrorMode}
+import org.apache.paimon.spark.catalyst.plans.logical.{CopyFileFormat, FileFormatType, MatchByColumnName, OnErrorMode}
 import org.apache.paimon.spark.copyinto.{CopyLoadHistoryManager, CopyLoadRecord}
 import org.apache.paimon.spark.leafnode.PaimonLeafV2CommandExec
 import org.apache.paimon.table.FileStoreTable
@@ -49,6 +49,7 @@ case class CopyIntoTableExec(
     pattern: Option[String],
     force: Boolean,
     onError: OnErrorMode,
+    matchByColumnName: MatchByColumnName,
     out: Seq[Attribute])
   extends PaimonLeafV2CommandExec {
 
@@ -56,6 +57,17 @@ case class CopyIntoTableExec(
 
   override protected def run(): Seq[InternalRow] = {
     fileFormat.validateForImport()
+
+    if (matchByColumnName != MatchByColumnName.None && columns.isDefined) {
+      throw new IllegalArgumentException(
+        "MATCH_BY_COLUMN_NAME and explicit column list are mutually exclusive")
+    }
+    if (
+      matchByColumnName != MatchByColumnName.None && fileFormat.formatType == FileFormatType.CSV
+    ) {
+      throw new IllegalArgumentException(
+        "MATCH_BY_COLUMN_NAME is not supported with CSV format because CSV files do not have column names")
+    }
 
     val table = catalog.loadTable(ident)
     assert(table.isInstanceOf[SparkTable])
@@ -85,27 +97,30 @@ case class CopyIntoTableExec(
       case _ =>
         val filePaths = filesToLoad.map(_.getPath.toString)
         val readerOptions = fileFormat.toSparkReaderOptions(onError)
-        fileFormat.formatType match {
-          case FileFormatType.PARQUET =>
-            runParquetImport(
-              paimonTable,
-              filePaths,
-              targetColumns,
-              writableColumns,
-              fields,
-              filesToLoad,
-              skippedFiles,
-              readerOptions)
-          case _ =>
-            runTextImport(
-              paimonTable,
-              filePaths,
-              targetColumns,
-              writableColumns,
-              fields,
-              filesToLoad,
-              skippedFiles,
-              readerOptions)
+        val useStructuredImport = fileFormat.formatType match {
+          case FileFormatType.PARQUET => true
+          case _ => false
+        }
+        if (useStructuredImport) {
+          runStructuredImport(
+            paimonTable,
+            filePaths,
+            targetColumns,
+            writableColumns,
+            fields,
+            filesToLoad,
+            skippedFiles,
+            readerOptions)
+        } else {
+          runTextImport(
+            paimonTable,
+            filePaths,
+            targetColumns,
+            writableColumns,
+            fields,
+            filesToLoad,
+            skippedFiles,
+            readerOptions)
         }
     }
   }
@@ -130,24 +145,27 @@ case class CopyIntoTableExec(
         val baseName = fileStatus.getPath.getName
 
         val result = Try {
-          fileFormat.formatType match {
-            case FileFormatType.PARQUET =>
-              val rawDf = spark.read.options(readerOptions).parquet(filePath)
-              val selectedDf =
-                buildParquetDataFrame(rawDf, targetColumns, writableColumns, fields)
-              validateParquetCast(rawDf, targetColumns, writableColumns, fields)
-              selectedDf.write.format("paimon").mode("append").insertInto(tableName)
-              val rowCount = spark.read.options(readerOptions).parquet(filePath).count()
-              rowCount
-            case _ =>
-              val stringSchema = buildStringSchema(targetColumns)
-              val sourceDf = readSourceData(Array(filePath), stringSchema, readerOptions)
-              val finalDf =
-                buildFinalDataFrame(sourceDf, targetColumns, writableColumns, fields)
-              val castedDf = castAndValidate(finalDf, writableColumns, fields)
-              val rowCount = castedDf.count()
-              castedDf.write.format("paimon").mode("append").insertInto(tableName)
-              rowCount
+          val useStructuredPath = fileFormat.formatType match {
+            case FileFormatType.PARQUET => true
+            case _ => false
+          }
+          if (useStructuredPath) {
+            val rawDf = readStructuredData(Array(filePath), readerOptions)
+            val selectedDf =
+              buildParquetDataFrame(rawDf, targetColumns, writableColumns, fields)
+            validateParquetCast(rawDf, targetColumns, writableColumns, fields)
+            selectedDf.write.format("paimon").mode("append").insertInto(tableName)
+            val rowCount = readStructuredData(Array(filePath), readerOptions).count()
+            rowCount
+          } else {
+            val stringSchema = buildStringSchema(targetColumns)
+            val sourceDf = readSourceData(Array(filePath), stringSchema, readerOptions)
+            val finalDf =
+              buildFinalDataFrame(sourceDf, targetColumns, writableColumns, fields)
+            val castedDf = castAndValidate(finalDf, writableColumns, fields)
+            val rowCount = castedDf.count()
+            castedDf.write.format("paimon").mode("append").insertInto(tableName)
+            rowCount
           }
         }
 
@@ -184,7 +202,7 @@ case class CopyIntoTableExec(
     results.toSeq ++ buildSkippedResults(skippedFiles)
   }
 
-  private def runParquetImport(
+  private def runStructuredImport(
       paimonTable: FileStoreTable,
       filePaths: Array[String],
       targetColumns: Seq[String],
@@ -193,7 +211,7 @@ case class CopyIntoTableExec(
       filesToLoad: Array[FileStatus],
       skippedFiles: Array[FileStatus],
       readerOptions: Map[String, String]): Seq[InternalRow] = {
-    val rawDf = spark.read.options(readerOptions).parquet(filePaths: _*)
+    val rawDf = readStructuredData(filePaths, readerOptions)
 
     val selectedDf = buildParquetDataFrame(rawDf, targetColumns, writableColumns, fields)
 
@@ -201,6 +219,8 @@ case class CopyIntoTableExec(
       case OnErrorMode.Continue =>
         val allTargetCols = writableColumns.toSet ++ targetColumns.toSet
         val inputFileCol = safeTempCol("__input_file", allTargetCols)
+
+        // Parquet CONTINUE - no parse errors, only cast errors
         val rawDfWithFile = rawDf.withColumn(inputFileCol, input_file_name())
         val totalRowsPerFile = rawDfWithFile
           .groupBy(col(inputFileCol))
@@ -254,7 +274,7 @@ case class CopyIntoTableExec(
       targetColumns: Seq[String],
       writableColumns: Seq[String],
       fields: Seq[DataField]): DataFrame = {
-    val resolver = spark.sessionState.conf.resolver
+    val resolver = columnResolver
     val sourceColumns = rawDf.columns.toSeq
 
     val selectExprs: Seq[Column] = writableColumns.map {
@@ -298,7 +318,7 @@ case class CopyIntoTableExec(
       targetColumns: Seq[String],
       writableColumns: Seq[String],
       fields: Seq[DataField]): Unit = {
-    val resolver = spark.sessionState.conf.resolver
+    val resolver = columnResolver
     val sourceColumns = rawDf.columns.toSeq
 
     val castCheckCols = ArrayBuffer[(String, String)]()
@@ -346,7 +366,7 @@ case class CopyIntoTableExec(
       writableColumns: Seq[String],
       fields: Seq[DataField],
       fileCol: String): CastFilterResult = {
-    val resolver = spark.sessionState.conf.resolver
+    val resolver = columnResolver
     val sourceColumns = rawDfWithFile.columns.toSeq.filterNot(_ == fileCol)
 
     val castCheckCols = ArrayBuffer[(String, String)]()
@@ -420,7 +440,7 @@ case class CopyIntoTableExec(
     val snapshotId = paimonTable.snapshotManager().latestSnapshotId()
     val loadedAt = System.currentTimeMillis()
 
-    val countDf = spark.read.options(readerOptions).parquet(filePaths: _*)
+    val countDf = readStructuredData(filePaths, readerOptions)
     val rowCounts = countDf
       .groupBy(input_file_name().as("file"))
       .count()
@@ -1044,6 +1064,29 @@ case class CopyIntoTableExec(
 
   private def extractBaseName(fullPath: String): String = {
     fullPath.substring(fullPath.lastIndexOf('/') + 1)
+  }
+
+  /** Returns a column name resolver based on matchByColumnName setting. */
+  private def columnResolver: (String, String) => Boolean = {
+    matchByColumnName match {
+      case MatchByColumnName.CaseSensitive => (a: String, b: String) => a == b
+      case MatchByColumnName.CaseInsensitive => (a: String, b: String) => a.equalsIgnoreCase(b)
+      case MatchByColumnName.None => spark.sessionState.conf.resolver
+    }
+  }
+
+  /** Reads structured data (Parquet or JSON) using Spark's native schema inference. */
+  private def readStructuredData(
+      filePaths: Array[String],
+      readerOptions: Map[String, String]): DataFrame = {
+    fileFormat.formatType match {
+      case FileFormatType.PARQUET =>
+        spark.read.options(readerOptions).parquet(filePaths: _*)
+      case FileFormatType.JSON =>
+        spark.read.options(readerOptions).json(filePaths: _*)
+      case other =>
+        throw new IllegalArgumentException(s"readStructuredData does not support format: $other")
+    }
   }
 
   private def safeTempCol(baseName: String, existingColumns: Set[String]): String = {

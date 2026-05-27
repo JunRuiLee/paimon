@@ -308,6 +308,7 @@ FILE_FORMAT = (TYPE = CSV [, option = value, ...])
 [PATTERN = 'regex']
 [FORCE = TRUE|FALSE]
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
+[MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
 ```
 
 **Basic import:**
@@ -346,6 +347,7 @@ FILE_FORMAT = (TYPE = JSON [, option = value, ...])
 [PATTERN = 'regex']
 [FORCE = TRUE|FALSE]
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
+[MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
 ```
 
 **Basic import:**
@@ -375,6 +377,7 @@ FILE_FORMAT = (TYPE = PARQUET [, option = value, ...])
 [PATTERN = 'regex']
 [FORCE = TRUE|FALSE]
 [ON_ERROR = { ABORT_STATEMENT | CONTINUE | SKIP_FILE }]
+[MATCH_BY_COLUMN_NAME = { NONE | CASE_SENSITIVE | CASE_INSENSITIVE }]
 ```
 
 **Basic import:**
@@ -528,6 +531,7 @@ OVERWRITE = TRUE;
 | PATTERN | Regex to filter source files by base file name. Only matching files are loaded. | (all files) |
 | FORCE | `FALSE`: skip files already loaded (idempotent). `TRUE`: reload all files. | `FALSE` |
 | ON_ERROR | Error handling strategy. `ABORT_STATEMENT`: abort on any error. `CONTINUE`: skip bad rows and continue loading. `SKIP_FILE`: skip files that contain errors. | `ABORT_STATEMENT` |
+| MATCH_BY_COLUMN_NAME | Column matching strategy for JSON/Parquet. `NONE`: match by position. `CASE_SENSITIVE`: match by exact column name. `CASE_INSENSITIVE`: match by column name ignoring case. Not supported for CSV. Cannot be used with explicit column list. | `NONE` |
 
 ### File Write Options
 
@@ -590,3 +594,4 @@ By default (`FORCE = FALSE`), COPY INTO tracks which files have been successfull
 - `PATTERN` matches the **base file name** only (not the full path).
 - Concurrent COPY INTO commands targeting the same table may produce duplicate data.
 - `SKIP_HEADER` only supports values `0` or `1`.
+- `MATCH_BY_COLUMN_NAME` is not supported for CSV format and cannot be combined with an explicit column list.

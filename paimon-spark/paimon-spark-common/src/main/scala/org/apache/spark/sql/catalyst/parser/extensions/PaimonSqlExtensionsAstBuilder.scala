@@ -171,7 +171,23 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
             else OnErrorMode.AbortStatement
         }
         .getOrElse(OnErrorMode.AbortStatement)
-      logical.CopyIntoTableCommand(table, columns, sourcePath, fileFormat, pattern, force, onError)
+      val matchByColumnName = Option(ctx.matchByColumnNameClause())
+        .map {
+          clause =>
+            if (clause.CASE_SENSITIVE() != null) MatchByColumnName.CaseSensitive
+            else if (clause.CASE_INSENSITIVE() != null) MatchByColumnName.CaseInsensitive
+            else MatchByColumnName.None
+        }
+        .getOrElse(MatchByColumnName.None)
+      logical.CopyIntoTableCommand(
+        table,
+        columns,
+        sourcePath,
+        fileFormat,
+        pattern,
+        force,
+        onError,
+        matchByColumnName)
     }
 
   /** Create a COPY INTO LOCATION (export) logical command. */

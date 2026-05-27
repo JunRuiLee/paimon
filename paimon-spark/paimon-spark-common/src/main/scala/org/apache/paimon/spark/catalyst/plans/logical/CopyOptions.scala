@@ -18,6 +18,25 @@
 
 package org.apache.paimon.spark.catalyst.plans.logical
 
+sealed trait MatchByColumnName
+
+object MatchByColumnName {
+  case object None extends MatchByColumnName
+  case object CaseSensitive extends MatchByColumnName
+  case object CaseInsensitive extends MatchByColumnName
+
+  def parse(value: String): MatchByColumnName = {
+    value.toUpperCase match {
+      case "NONE" => None
+      case "CASE_SENSITIVE" => CaseSensitive
+      case "CASE_INSENSITIVE" => CaseInsensitive
+      case other =>
+        throw new IllegalArgumentException(
+          s"Unsupported MATCH_BY_COLUMN_NAME value: $other. Supported: NONE, CASE_SENSITIVE, CASE_INSENSITIVE")
+    }
+  }
+}
+
 sealed trait OnErrorMode
 
 object OnErrorMode {

@@ -79,7 +79,8 @@ statement
       fileFormatClause
       patternClause?
       forceClause?
-      onErrorClause?                                                                        #copyIntoTable
+      onErrorClause?
+      matchByColumnNameClause?                                                                #copyIntoTable
     | COPY INTO targetPath=STRING
       FROM multipartIdentifier
       fileFormatClause
@@ -146,6 +147,10 @@ onErrorClause
   : ON_ERROR '=' (ABORT_STATEMENT | CONTINUE | SKIP_FILE)
   ;
 
+matchByColumnNameClause
+  : MATCH_BY_COLUMN_NAME '=' (NONE | CASE_SENSITIVE | CASE_INSENSITIVE)
+  ;
+
 overwriteClause
   : OVERWRITE '=' booleanValue
   ;
@@ -202,6 +207,7 @@ nonReserved
     | TRUE | FALSE
     | MAP
     | COPY | INTO | FROM | FILE_FORMAT | PATTERN | FORCE | ON_ERROR | ABORT_STATEMENT | CONTINUE | SKIP_FILE | OVERWRITE
+    | MATCH_BY_COLUMN_NAME | CASE_SENSITIVE | CASE_INSENSITIVE | NONE
     | CSV
     | JSON
     | PARQUET
@@ -249,6 +255,10 @@ OVERWRITE: 'OVERWRITE';
 CSV: 'CSV';
 JSON: 'JSON';
 PARQUET: 'PARQUET';
+MATCH_BY_COLUMN_NAME: 'MATCH_BY_COLUMN_NAME';
+CASE_SENSITIVE: 'CASE_SENSITIVE';
+CASE_INSENSITIVE: 'CASE_INSENSITIVE';
+NONE: 'NONE';
 
 PLUS: '+';
 MINUS: '-';

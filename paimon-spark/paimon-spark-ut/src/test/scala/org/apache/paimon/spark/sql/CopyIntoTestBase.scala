@@ -1732,4 +1732,299 @@ class CopyIntoTestBase extends PaimonSparkTestBase {
 
     spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_continue_multi")
   }
+
+  // ==================== MATCH_BY_COLUMN_NAME tests ====================
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE with JSON reordered columns") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_json_ci")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_json_ci (id INT, name STRING, age INT)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"AGE":30,"NAME":"Alice","ID":1}
+            |{"NAME":"Bob","AGE":25,"ID":2}
+            |""".stripMargin)
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_json_ci
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = JSON)
+                     |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_json_ci ORDER BY id"),
+          Seq(Row(1, "Alice", 30), Row(2, "Bob", 25)))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_json_ci")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME = CASE_SENSITIVE with JSON") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_json_cs")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_json_cs (id INT, name STRING, age INT)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id":1,"name":"Alice","age":30}
+            |{"id":2,"name":"Bob","age":25}
+            |""".stripMargin)
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_json_cs
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = JSON)
+                     |MATCH_BY_COLUMN_NAME = CASE_SENSITIVE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_json_cs ORDER BY id"),
+          Seq(Row(1, "Alice", 30), Row(2, "Bob", 25)))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_json_cs")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME = CASE_SENSITIVE mismatched case fills NULL") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_json_cs_miss")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_json_cs_miss (id INT, name STRING, age INT)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id":1,"NAME":"Alice","AGE":30}
+            |{"id":2,"NAME":"Bob","AGE":25}
+            |""".stripMargin)
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_json_cs_miss
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = JSON)
+                     |MATCH_BY_COLUMN_NAME = CASE_SENSITIVE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_json_cs_miss ORDER BY id"),
+          Seq(Row(1, null, null), Row(2, null, null)))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_json_cs_miss")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME with Parquet reordered columns") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_pq_ci")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_pq_ci (id INT, name STRING, age INT)")
+
+    withParquetDir {
+      dir =>
+        import org.apache.spark.sql.types._
+        val schema = StructType(
+          Seq(
+            StructField("AGE", IntegerType),
+            StructField("NAME", StringType),
+            StructField("ID", IntegerType)))
+        createParquetFile(dir, "data", Seq(Row(30, "Alice", 1), Row(25, "Bob", 2)), schema)
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_pq_ci
+                     |FROM '${dir.getAbsolutePath}/data'
+                     |FILE_FORMAT = (TYPE = PARQUET)
+                     |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_pq_ci ORDER BY id"),
+          Seq(Row(1, "Alice", 30), Row(2, "Bob", 25)))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_pq_ci")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME source has extra columns") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_extra")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_extra (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id":1,"name":"Alice","extra":"ignored","another":"also_ignored"}
+            |{"id":2,"name":"Bob","extra":"ignored2"}
+            |""".stripMargin
+        )
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_extra
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = JSON)
+                     |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_extra ORDER BY id"),
+          Seq(Row(1, "Alice"), Row(2, "Bob")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_extra")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME target columns not in source filled with NULL") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_missing")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_missing (id INT, name STRING, age INT)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id":1,"name":"Alice"}
+            |{"id":2,"name":"Bob"}
+            |""".stripMargin)
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_missing
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = JSON)
+                     |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_missing ORDER BY id"),
+          Seq(Row(1, "Alice", null), Row(2, "Bob", null)))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_missing")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME + CSV errors") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_csv_err")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_csv_err (id INT, name STRING)")
+
+    withCsvDir {
+      dir =>
+        createCsvFile(dir, "data.csv", "1,Alice\n")
+
+        val e = intercept[IllegalArgumentException] {
+          spark.sql(s"""COPY INTO $dbName0.copy_match_csv_err
+                       |FROM '${dir.getAbsolutePath}'
+                       |FILE_FORMAT = (TYPE = CSV)
+                       |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                       |""".stripMargin)
+        }
+        assert(e.getMessage.contains("not supported with CSV"))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_csv_err")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME + explicit columns list errors") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_cols_err")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_cols_err (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(dir, "data.json", """{"id":1,"name":"Alice"}""")
+
+        val e = intercept[IllegalArgumentException] {
+          spark.sql(s"""COPY INTO $dbName0.copy_match_cols_err (id, name)
+                       |FROM '${dir.getAbsolutePath}'
+                       |FILE_FORMAT = (TYPE = JSON)
+                       |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                       |""".stripMargin)
+        }
+        assert(e.getMessage.contains("mutually exclusive"))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_cols_err")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME = NONE is same as positional") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_none")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_none (id INT, name STRING, age INT)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"id":"1","name":"Alice","age":"30"}
+            |{"id":"2","name":"Bob","age":"25"}
+            |""".stripMargin)
+
+        spark.sql(s"""COPY INTO $dbName0.copy_match_none
+                     |FROM '${dir.getAbsolutePath}'
+                     |FILE_FORMAT = (TYPE = JSON)
+                     |MATCH_BY_COLUMN_NAME = NONE
+                     |""".stripMargin)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_none ORDER BY id"),
+          Seq(Row(1, "Alice", 30), Row(2, "Bob", 25)))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_none")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME with ON_ERROR = CONTINUE") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_continue")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_continue (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(
+          dir,
+          "data.json",
+          """{"ID":1,"NAME":"Alice"}
+            |{bad json}
+            |{"ID":3,"NAME":"Charlie"}
+            |""".stripMargin)
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_match_continue
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = JSON)
+                                  |ON_ERROR = CONTINUE
+                                  |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        assert(rows(0).getLong(4) > 0)
+
+        checkAnswer(
+          spark.sql(s"SELECT * FROM $dbName0.copy_match_continue ORDER BY id"),
+          Seq(Row(1, "Alice"), Row(3, "Charlie")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_continue")
+  }
+
+  test("COPY INTO: MATCH_BY_COLUMN_NAME with ON_ERROR = SKIP_FILE") {
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_skipfile")
+    spark.sql(s"CREATE TABLE $dbName0.copy_match_skipfile (id INT, name STRING)")
+
+    withJsonDir {
+      dir =>
+        createJsonFile(dir, "good.json", """{"ID":1,"NAME":"Alice"}""" + "\n")
+        createJsonFile(dir, "bad.json", "{bad json}\n")
+
+        val result = spark.sql(s"""COPY INTO $dbName0.copy_match_skipfile
+                                  |FROM '${dir.getAbsolutePath}'
+                                  |FILE_FORMAT = (TYPE = JSON)
+                                  |ON_ERROR = SKIP_FILE
+                                  |MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                                  |""".stripMargin)
+
+        val rows = result.collect()
+        val loaded = rows.filter(_.getString(1) == "LOADED")
+        val failed = rows.filter(_.getString(1) == "LOAD_FAILED")
+        assert(loaded.length == 1)
+        assert(failed.length == 1)
+
+        checkAnswer(spark.sql(s"SELECT * FROM $dbName0.copy_match_skipfile"), Seq(Row(1, "Alice")))
+    }
+
+    spark.sql(s"DROP TABLE IF EXISTS $dbName0.copy_match_skipfile")
+  }
 }

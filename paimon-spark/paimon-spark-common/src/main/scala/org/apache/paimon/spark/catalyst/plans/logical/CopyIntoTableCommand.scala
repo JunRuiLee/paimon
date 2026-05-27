@@ -30,7 +30,8 @@ case class CopyIntoTableCommand(
     fileFormat: CopyFileFormat,
     pattern: Option[String],
     force: Boolean,
-    onError: OnErrorMode = OnErrorMode.AbortStatement)
+    onError: OnErrorMode = OnErrorMode.AbortStatement,
+    matchByColumnName: MatchByColumnName = MatchByColumnName.None)
   extends PaimonLeafCommand {
 
   override def output: Seq[Attribute] = Seq(
