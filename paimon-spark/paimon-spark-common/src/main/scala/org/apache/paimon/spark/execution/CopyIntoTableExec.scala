@@ -72,8 +72,205 @@ case class CopyIntoTableExec(
     }
 
     val filePaths = filesToLoad.map(_.getPath.toString)
-    val stringSchema = buildStringSchema(targetColumns)
     val readerOptions = fileFormat.toSparkReaderOptions
+
+    fileFormat.formatType match {
+      case FileFormatType.PARQUET =>
+        runParquetImport(
+          paimonTable,
+          filePaths,
+          targetColumns,
+          writableColumns,
+          fields,
+          filesToLoad,
+          skippedFiles,
+          readerOptions)
+      case _ =>
+        runTextImport(
+          paimonTable,
+          filePaths,
+          targetColumns,
+          writableColumns,
+          fields,
+          filesToLoad,
+          skippedFiles,
+          readerOptions)
+    }
+  }
+
+  private def runParquetImport(
+      paimonTable: FileStoreTable,
+      filePaths: Array[String],
+      targetColumns: Seq[String],
+      writableColumns: Seq[String],
+      fields: Seq[DataField],
+      filesToLoad: Array[FileStatus],
+      skippedFiles: Array[FileStatus],
+      readerOptions: Map[String, String]): Seq[InternalRow] = {
+    val rawDf = spark.read.options(readerOptions).parquet(filePaths: _*)
+
+    val selectedDf = buildParquetDataFrame(rawDf, targetColumns, writableColumns, fields)
+    validateParquetCast(rawDf, targetColumns, writableColumns, fields)
+
+    val tableName = CopyIntoUtils.quoteIdentifier(catalog.name(), ident)
+    selectedDf.write.format("paimon").mode("append").insertInto(tableName)
+
+    recordParquetHistoryAndBuildResults(
+      paimonTable,
+      filesToLoad,
+      skippedFiles,
+      filePaths,
+      readerOptions)
+  }
+
+  private def buildParquetDataFrame(
+      rawDf: DataFrame,
+      targetColumns: Seq[String],
+      writableColumns: Seq[String],
+      fields: Seq[DataField]): DataFrame = {
+    val resolver = spark.sessionState.conf.resolver
+    val sourceColumns = rawDf.columns.toSeq
+
+    val selectExprs: Seq[Column] = writableColumns.map {
+      colName =>
+        if (targetColumns.exists(tc => resolver(tc, colName))) {
+          val srcCol = sourceColumns.find(s => resolver(s, colName))
+          srcCol match {
+            case Some(s) =>
+              val field = fields.find(_.name() == colName).get
+              val sparkType =
+                org.apache.paimon.spark.SparkTypeUtils.fromPaimonType(field.`type`())
+              col(s).cast(sparkType).as(colName)
+            case None =>
+              val field = fields.find(_.name() == colName).get
+              val sparkType =
+                org.apache.paimon.spark.SparkTypeUtils.fromPaimonType(field.`type`())
+              lit(null).cast(sparkType).as(colName)
+          }
+        } else {
+          val field = fields.find(_.name() == colName).get
+          val defaultVal = field.defaultValue()
+          if (defaultVal != null) {
+            val sparkType =
+              org.apache.paimon.spark.SparkTypeUtils.fromPaimonType(field.`type`())
+            try {
+              val parsed = spark.sessionState.sqlParser.parseExpression(defaultVal)
+              SparkShimLoader.shim.classicApi.column(parsed).cast(sparkType).as(colName)
+            } catch {
+              case _: Exception => lit(null).cast(sparkType).as(colName)
+            }
+          } else {
+            lit(null).as(colName)
+          }
+        }
+    }
+    rawDf.select(selectExprs: _*)
+  }
+
+  private def validateParquetCast(
+      rawDf: DataFrame,
+      targetColumns: Seq[String],
+      writableColumns: Seq[String],
+      fields: Seq[DataField]): Unit = {
+    val resolver = spark.sessionState.conf.resolver
+    val sourceColumns = rawDf.columns.toSeq
+
+    val castCheckCols = ArrayBuffer[(String, String)]()
+    var validationDf = rawDf
+
+    writableColumns.zip(fields).foreach {
+      case (colName, field) =>
+        if (targetColumns.exists(tc => resolver(tc, colName))) {
+          sourceColumns.find(s => resolver(s, colName)).foreach {
+            srcColName =>
+              val sparkType =
+                org.apache.paimon.spark.SparkTypeUtils.fromPaimonType(field.`type`())
+              val castColName = s"__pq_cv_$colName"
+              validationDf = validationDf.withColumn(castColName, col(srcColName).cast(sparkType))
+              castCheckCols += ((srcColName, castColName))
+          }
+        }
+    }
+
+    if (castCheckCols.nonEmpty) {
+      val badCastFilter = castCheckCols
+        .map { case (src, dst) => col(src).isNotNull && col(dst).isNull }
+        .reduce(_ || _)
+      val badRows = validationDf.filter(badCastFilter).limit(1).collect()
+      if (badRows.nonEmpty) {
+        val example = castCheckCols.find {
+          case (src, dst) =>
+            val row = badRows(0)
+            val srcIdx = validationDf.schema.fieldIndex(src)
+            val dstIdx = validationDf.schema.fieldIndex(dst)
+            !row.isNullAt(srcIdx) && row.isNullAt(dstIdx)
+        }
+        throw new IllegalArgumentException(
+          s"ON_ERROR = ABORT_STATEMENT: Cast failure in column '${example.map(_._1).getOrElse("unknown")}'. Source data contains values that cannot be converted to the target type.")
+      }
+    }
+  }
+
+  private def recordParquetHistoryAndBuildResults(
+      paimonTable: FileStoreTable,
+      filesToLoad: Array[FileStatus],
+      skippedFiles: Array[FileStatus],
+      filePaths: Array[String],
+      readerOptions: Map[String, String]): Seq[InternalRow] = {
+    val paimonPath = new org.apache.paimon.fs.Path(paimonTable.location().toString)
+    val historyManager = new CopyLoadHistoryManager(paimonTable.fileIO(), paimonPath)
+    val snapshotId = paimonTable.snapshotManager().latestSnapshotId()
+    val loadedAt = System.currentTimeMillis()
+
+    val countDf = spark.read.options(readerOptions).parquet(filePaths: _*)
+    val rowCounts = countDf
+      .groupBy(input_file_name().as("file"))
+      .count()
+      .collect()
+
+    val fileCountMap = rowCounts.map {
+      row =>
+        val fullPath = row.getString(0)
+        val baseName = fullPath.substring(fullPath.lastIndexOf('/') + 1)
+        baseName -> row.getLong(1)
+    }.toMap
+
+    val loadedResults = filesToLoad.map {
+      fileStatus =>
+        val baseName = fileStatus.getPath.getName
+        val rowCount = fileCountMap.getOrElse(baseName, 0L)
+
+        historyManager.recordLoaded(
+          CopyLoadRecord(
+            filePath = fileStatus.getPath.toString,
+            fileSize = fileStatus.getLen,
+            lastModified = fileStatus.getModificationTime,
+            loadedAt = loadedAt,
+            snapshotId = snapshotId,
+            rowsLoaded = rowCount
+          ))
+
+        InternalRow(
+          UTF8String.fromString(baseName),
+          UTF8String.fromString("LOADED"),
+          rowCount,
+          rowCount)
+    }.toSeq
+
+    val skippedResults = buildSkippedResults(skippedFiles)
+    loadedResults ++ skippedResults
+  }
+
+  private def runTextImport(
+      paimonTable: FileStoreTable,
+      filePaths: Array[String],
+      targetColumns: Seq[String],
+      writableColumns: Seq[String],
+      fields: Seq[DataField],
+      filesToLoad: Array[FileStatus],
+      skippedFiles: Array[FileStatus],
+      readerOptions: Map[String, String]): Seq[InternalRow] = {
+    val stringSchema = buildStringSchema(targetColumns)
 
     val sourceDf = readSourceData(filePaths, stringSchema, readerOptions)
     val finalDf =
