@@ -38,15 +38,21 @@ import shutil
 import tempfile
 import unittest
 from types import SimpleNamespace
+
 import pyarrow as pa
+
 from pypaimon import CatalogFactory, Schema
 from pypaimon.deletionvectors.bitmap_deletion_vector import BitmapDeletionVector
 from pypaimon.globalindex.global_index_meta import GlobalIndexMeta
 from pypaimon.index.deletion_vector_meta import DeletionVectorMeta
-from pypaimon.index.dynamic_bucket import HASH_INDEX, DynamicBucketIndexMaintainer, _read_hashes
+from pypaimon.index.dynamic_bucket import (HASH_INDEX,
+                                           DynamicBucketIndexMaintainer,
+                                           _read_hashes)
 from pypaimon.index.index_file_meta import IndexFileMeta
-from pypaimon.index.pk.primary_key_index_source_file import PrimaryKeyIndexSourceFile
-from pypaimon.index.pk.primary_key_index_source_meta import PrimaryKeyIndexSourceMeta
+from pypaimon.index.pk.primary_key_index_source_file import (
+    PrimaryKeyIndexSourceFile)
+from pypaimon.index.pk.primary_key_index_source_meta import (
+    PrimaryKeyIndexSourceMeta)
 from pypaimon.manifest.index_manifest_entry import IndexManifestEntry
 from pypaimon.manifest.index_manifest_file import IndexManifestFile
 from pypaimon.read.scanner.file_scanner import FileScanner
@@ -55,14 +61,10 @@ from pypaimon.table.source import primary_key_sorted_index_scan
 from pypaimon.table.source.full_text_read import DataEvolutionFullTextRead
 from pypaimon.table.source.primary_key_full_text_read import PrimaryKeyFullTextRead
 from pypaimon.table.source.primary_key_full_text_scan import (
-    PrimaryKeyFullTextScanPlan,
-    PrimaryKeyFullTextSearchSplit,
-)
+    PrimaryKeyFullTextScanPlan, PrimaryKeyFullTextSearchSplit)
 from pypaimon.table.source.primary_key_vector_read import PrimaryKeyVectorRead
 from pypaimon.table.source.primary_key_vector_scan import (
-    PrimaryKeyVectorScanPlan,
-    PrimaryKeyVectorSearchSplit,
-)
+    PrimaryKeyVectorScanPlan, PrimaryKeyVectorSearchSplit)
 from pypaimon.table.source.vector_search_read import DataEvolutionVectorRead
 from pypaimon.write.commit_message import CommitMessage
 from pypaimon.write.file_store_commit import _abort_commit_messages
@@ -388,6 +390,90 @@ class DeletionVectorIndexPathTest(IndexFileLayoutTestBase):
 
         self.assertEqual([entry], entries)
         self.assertTrue(vectors[_DATA_FILE_NAME].is_deleted(7))
+
+
+class IndexLayoutIsImmutableTest(IndexFileLayoutTestBase):
+    """index-file-in-data-file-dir is immutable, so a copy must not flip it.
+
+    Java checks this in AbstractFileStoreTable.copy (checkImmutability). Without the
+    check, a copied table writes one layout and every later reader looks in the
+    other.
+    """
+
+    def test_copy_cannot_turn_the_layout_off(self):
+        table = self._create_table('copy_off', **_IN_DATA_FILE_DIR)
+        with self.assertRaises(ValueError):
+            table.copy({'index-file-in-data-file-dir': 'false'})
+
+    def test_copy_cannot_turn_the_layout_on(self):
+        table = self._create_table('copy_on')
+        with self.assertRaises(ValueError):
+            table.copy({'index-file-in-data-file-dir': 'true'})
+
+    def test_copy_cannot_drop_the_layout_option(self):
+        # Dropping it is a flip too: the default is the table-root index directory.
+        table = self._create_table('copy_dropped', **_IN_DATA_FILE_DIR)
+        with self.assertRaises(ValueError):
+            table.copy({'index-file-in-data-file-dir': None})
+
+    def test_copy_without_time_travel_is_guarded_too(self):
+        table = self._create_table('copy_no_travel', **_IN_DATA_FILE_DIR)
+        with self.assertRaises(ValueError):
+            table.copy_without_time_travel(
+                {'index-file-in-data-file-dir': 'false'})
+
+    def test_copy_accepts_the_persisted_value_and_keeps_the_layout(self):
+        table = self._create_table('copy_same', **_IN_DATA_FILE_DIR)
+
+        copied = table.copy({'index-file-in-data-file-dir': 'true'})
+
+        self.assertTrue(copied.options.index_file_in_data_file_dir())
+        self.assertEqual(
+            os.path.join(self._table_root('copy_same'),
+                         f'p_date=20260831/bucket-{_BUCKET}'),
+            copied.path_factory().index_file_factory(
+                ('20260831',), _BUCKET).index_path())
+
+    def test_copy_cannot_set_the_layout_while_switching_branches(self):
+        # The target branch's schema owns the layout and may differ, and this copy
+        # inherits the current schema across the switch, so there is no baseline to
+        # validate a supplied value against.
+        table = self._create_table('copy_branch_layout', **_IN_DATA_FILE_DIR)
+        with self.assertRaises(ValueError):
+            table.copy({'branch': 'b1', 'index-file-in-data-file-dir': 'true'})
+
+    def test_copy_resetting_to_main_counts_as_a_switch(self):
+        # None folds onto main, so leaving a branch is a switch as much as entering
+        # one. Only reachable from a branch table: _copy raises KeyError when asked to
+        # remove an option the schema does not carry.
+        table = self._create_table('copy_branch_reset', **_IN_DATA_FILE_DIR)
+        branch_table = table.copy({'branch': 'b1'})
+
+        with self.assertRaises(ValueError):
+            branch_table.copy({'branch': None,
+                               'index-file-in-data-file-dir': 'true'})
+
+    def test_copy_can_still_switch_branches(self):
+        table = self._create_table('copy_branch_plain', **_IN_DATA_FILE_DIR)
+
+        copied = table.copy({'branch': 'b1'})
+
+        self.assertEqual('b1', copied.current_branch())
+
+    def test_copy_to_the_current_branch_is_not_treated_as_a_switch(self):
+        table = self._create_table('copy_branch_same', **_IN_DATA_FILE_DIR)
+
+        copied = table.copy({'branch': table.current_branch(),
+                             'index-file-in-data-file-dir': 'true'})
+
+        self.assertTrue(copied.options.index_file_in_data_file_dir())
+
+    def test_copy_of_an_unrelated_option_still_works(self):
+        table = self._create_table('copy_unrelated', **_IN_DATA_FILE_DIR)
+
+        copied = table.copy({'scan.parallelism': '4'})
+
+        self.assertTrue(copied.options.index_file_in_data_file_dir())
 
 
 class HashIndexPathTest(IndexFileLayoutTestBase):

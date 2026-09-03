@@ -525,6 +525,39 @@ class FileStoreTable(Table):
             else:
                 new_options[k] = v
 
+        # Java rejects any dynamic change to an immutable option
+        # (AbstractFileStoreTable.checkImmutability); pypaimon only guards bucket.
+        # This one decides whether an index file sits in the bucket directory or under
+        # the table's index directory, so a copy that flips it leaves the writer and
+        # every later reader disagreeing about where every index file is. Dropping the
+        # option counts as a flip, because the default is the other layout; passing the
+        # persisted value back stays valid.
+        from pypaimon.branch.branch_manager import BranchManager
+
+        layout_key = CoreOptions.INDEX_FILE_IN_DATA_FILE_DIR.key()
+        branch_key = CoreOptions.BRANCH.key()
+        # normalize_branch folds None and blank onto main, so resetting a branch table
+        # back to main counts as a switch too.
+        switching_branch = (
+            branch_key in options
+            and BranchManager.normalize_branch(options[branch_key])
+            != self.current_branch())
+        if switching_branch:
+            # The layout belongs to the schema of the branch that will own the files,
+            # and it may differ from this one: schema evolution accepts an immutable
+            # option until a branch has snapshots. This copy inherits the current
+            # schema across the switch, as it does for every other option -- Java
+            # re-reads the branch's schema in switchToBranch -- so there is no baseline
+            # here to validate a value against. Refuse to take one rather than honour a
+            # value that may contradict the branch; loading the branch through the
+            # catalog reads it under its own schema.
+            if layout_key in options:
+                raise ValueError(
+                    "Cannot set " + layout_key + " while switching branches")
+        elif (CoreOptions.from_dict(new_options).index_file_in_data_file_dir()
+                != self.options.index_file_in_data_file_dir()):
+            raise ValueError("Cannot change " + layout_key)
+
         new_table_schema = self.table_schema.copy(new_options=new_options)
 
         if resolve_time_travel:
