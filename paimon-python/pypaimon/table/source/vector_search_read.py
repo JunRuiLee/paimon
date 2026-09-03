@@ -210,7 +210,18 @@ class AbstractVectorSearchReadImpl:
         finally:
             scanner.close()
 
-    def _open_offset_reader(self, vector_index_files, row_range_start, row_range_end):
+    def _index_base_path(self, split=None):
+        """Directory the split's index files live in.
+
+        A data-evolution global index always lives under the global-index root.
+        The primary-key families are bucket-scoped -- Java builds every index file
+        through ``FileStorePathFactory.indexFileFactory(partition, bucket)`` (see
+        IndexFileHandler) -- so their readers override this.
+        """
+        return self._table.path_factory().global_index_path_factory().index_path()
+
+    def _open_offset_reader(self, vector_index_files, row_range_start, row_range_end,
+                            split=None):
         """Open a vector index reader for the split, wrapped with the row-id offset.
 
         The caller must close the returned reader once its future completes.
@@ -231,14 +242,14 @@ class AbstractVectorSearchReadImpl:
         reader = _create_vector_reader(
             vector_index_files[0].index_type,
             self._table.file_io,
-            self._table.path_factory().global_index_path_factory().index_path(),
+            self._index_base_path(split),
             index_io_meta_list,
             self._table.table_schema.options,
         )
         return reader, OffsetGlobalIndexReader(reader, row_range_start, row_range_end)
 
     def _eval(self, row_range_start, row_range_end, vector_index_files,
-              query_vector, search_limit, include_row_ids):
+              query_vector, search_limit, include_row_ids, split=None):
         from pypaimon.globalindex.global_index_reader import _completed_future
 
         if not vector_index_files:
@@ -254,7 +265,7 @@ class AbstractVectorSearchReadImpl:
             vector_search = vector_search.with_include_row_ids(include_row_ids)
 
         reader, offset_reader = self._open_offset_reader(
-            vector_index_files, row_range_start, row_range_end)
+            vector_index_files, row_range_start, row_range_end, split)
         future = offset_reader.visit_vector_search(vector_search)
         future.add_done_callback(lambda _: reader.close())
         return future

@@ -49,6 +49,19 @@ class PrimaryKeyFullTextRead(DataEvolutionFullTextRead):
         self._definition = definition
         super().__init__(table, limit, text_column, query, partition_filter)
 
+    def _index_base_path(self, split=None):
+        path_factory = self._table.path_factory()
+        if not path_factory.index_file_in_data_file_dir:
+            return super()._index_base_path(split)
+        if split is None:
+            # Falling back to the global-index root here would read a directory the
+            # payloads are not in and report an empty index instead of a failure.
+            raise ValueError(
+                "index-file-in-data-file-dir puts primary-key index payloads in the "
+                "bucket directory, which cannot be located without the split")
+        return path_factory.bucket_path(
+            tuple(split.data_split.partition.values), split.data_split.bucket)
+
     def read_plan(self, plan):
         if not isinstance(plan, PrimaryKeyFullTextScanPlan):
             raise ValueError("Primary-key full-text read requires a PrimaryKeyFullTextScanPlan.")
@@ -58,7 +71,8 @@ class PrimaryKeyFullTextRead(DataEvolutionFullTextRead):
             for payload in split.payloads:
                 source_meta = PrimaryKeyIndexSourceMeta.from_index_file(payload)
                 row_count = sum(source.row_count for source in source_meta.source_files)
-                futures.append(self._eval(0, row_count - 1, [payload], None))
+                futures.append(
+                    self._eval(0, row_count - 1, [payload], None, split))
                 contexts.append((split, source_meta))
         wait(futures)
 

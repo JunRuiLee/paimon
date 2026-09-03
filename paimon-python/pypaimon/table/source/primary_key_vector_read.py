@@ -35,6 +35,19 @@ from pypaimon.utils.roaring_bitmap import RoaringBitmap64
 class PrimaryKeyVectorRead(DataEvolutionVectorRead):
     """Search PK vector payloads and localize payload row ids to data files."""
 
+    def _index_base_path(self, split=None):
+        path_factory = self._table.path_factory()
+        if not path_factory.index_file_in_data_file_dir:
+            return super()._index_base_path(split)
+        if split is None:
+            # Falling back to the global-index root here would read a directory the
+            # payloads are not in and report an empty index instead of a failure.
+            raise ValueError(
+                "index-file-in-data-file-dir puts primary-key index payloads in the "
+                "bucket directory, which cannot be located without the split")
+        return path_factory.bucket_path(
+            tuple(split.data_split.partition.values), split.data_split.bucket)
+
     def read_plan(self, plan):
         if not isinstance(plan, PrimaryKeyVectorScanPlan):
             raise ValueError("Primary-key vector read requires a PrimaryKeyVectorScanPlan.")
@@ -56,7 +69,7 @@ class PrimaryKeyVectorRead(DataEvolutionVectorRead):
                     split, source_meta.source_files, deleted_positions)
                 future = self._eval(
                     0, row_count - 1, [payload], self._query_vector,
-                    indexed_limit, include_row_ids)
+                    indexed_limit, include_row_ids, split)
                 futures.append(future)
                 contexts.append((split, source_meta))
         wait(futures)

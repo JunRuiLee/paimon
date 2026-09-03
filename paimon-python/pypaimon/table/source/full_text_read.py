@@ -123,8 +123,18 @@ class DataEvolutionFullTextRead(FullTextRead):
 
         return DictBasedScoredIndexResult(merged_scores).top_k(self._limit)
 
+    def _index_base_path(self, split=None):
+        """Directory the split's index files live in.
+
+        A data-evolution global index always lives under the global-index root.
+        The primary-key families are bucket-scoped -- Java builds every index file
+        through ``FileStorePathFactory.indexFileFactory(partition, bucket)`` (see
+        IndexFileHandler) -- so their readers override this.
+        """
+        return self._table.path_factory().global_index_path_factory().index_path()
+
     def _eval(self, row_range_start, row_range_end, full_text_index_files,
-              include_row_ids):
+              include_row_ids, split=None):
         index_io_meta_list = []
         for index_file in full_text_index_files:
             meta = index_file.global_index_meta
@@ -139,7 +149,7 @@ class DataEvolutionFullTextRead(FullTextRead):
             )
 
         index_type = full_text_index_files[0].index_type
-        index_path = self._table.path_factory().global_index_path_factory().index_path()
+        index_path = self._index_base_path(split)
         file_io = self._table.file_io
 
         reader = _create_full_text_reader(

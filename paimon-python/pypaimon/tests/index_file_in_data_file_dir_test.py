@@ -51,6 +51,19 @@ from pypaimon.manifest.index_manifest_entry import IndexManifestEntry
 from pypaimon.manifest.index_manifest_file import IndexManifestFile
 from pypaimon.read.scanner.file_scanner import FileScanner
 from pypaimon.table.row.generic_row import GenericRow
+from pypaimon.table.source import primary_key_sorted_index_scan
+from pypaimon.table.source.full_text_read import DataEvolutionFullTextRead
+from pypaimon.table.source.primary_key_full_text_read import PrimaryKeyFullTextRead
+from pypaimon.table.source.primary_key_full_text_scan import (
+    PrimaryKeyFullTextScanPlan,
+    PrimaryKeyFullTextSearchSplit,
+)
+from pypaimon.table.source.primary_key_vector_read import PrimaryKeyVectorRead
+from pypaimon.table.source.primary_key_vector_scan import (
+    PrimaryKeyVectorScanPlan,
+    PrimaryKeyVectorSearchSplit,
+)
+from pypaimon.table.source.vector_search_read import DataEvolutionVectorRead
 from pypaimon.write.commit_message import CommitMessage
 from pypaimon.write.file_store_commit import _abort_commit_messages
 from pypaimon.write.table_delete import TableDeleteByRowId
@@ -59,6 +72,14 @@ _INDEX_FILE_NAME = 'index-362ce1bd-84ac-4241-afcc-3764a10281fd-0'
 _DATA_FILE_NAME = 'data-612bee3a-113e-4ea7-8854-5550674e7e0b-0.parquet'
 _BUCKET = 10
 _IN_DATA_FILE_DIR = {'index-file-in-data-file-dir': 'true'}
+
+
+class _CapturedSplit(Exception):
+    """Carries the split that reached path resolution, and stops the read there."""
+
+    def __init__(self, split):
+        super().__init__('captured')
+        self.split = split
 
 
 class IndexFileLayoutTestBase(unittest.TestCase):
@@ -433,6 +454,208 @@ class HashIndexPathTest(IndexFileLayoutTestBase):
         self.assertEqual(expected, entry.index_file.external_path)
         self.assertTrue(table.file_io.exists(expected), expected)
         self.assertEqual(hashes, _read_hashes(table, entry))
+
+
+class PrimaryKeyIndexPathTest(IndexFileLayoutTestBase):
+    """The three source-backed primary-key index families are bucket-scoped.
+
+    Java opens all of them through indexFileFactory(partition, bucket) -- see
+    IndexFileHandler.pkVectorAnnSegmentFile / pkFullTextIndexFile /
+    pkSortedIndexFile. A data-evolution global index is not bucket-scoped and stays
+    on the global-index root, so the shared readers must keep their old behavior.
+    """
+
+    def _split(self, table, partition_values=('20260831',), attr='data_split'):
+        inner = SimpleNamespace(
+            partition=GenericRow(list(partition_values), table.partition_keys_fields),
+            bucket=_BUCKET)
+        return SimpleNamespace(**{attr: inner})
+
+    @staticmethod
+    def _reader(cls, table):
+        # __init__ wants a whole scan context (columns, query, limit) that says
+        # nothing about paths; only _table matters here.
+        reader = object.__new__(cls)
+        reader._table = table
+        return reader
+
+    def _bucket_dir(self, table_name):
+        return os.path.join(self._table_root(table_name),
+                            f'p_date=20260831/bucket-{_BUCKET}')
+
+    def test_vector_payloads_are_opened_in_the_bucket_directory(self):
+        table = self._create_table('pk_vector_in_data_dir', **_IN_DATA_FILE_DIR)
+        reader = self._reader(PrimaryKeyVectorRead, table)
+
+        self.assertEqual(self._bucket_dir('pk_vector_in_data_dir'),
+                         reader._index_base_path(self._split(table)))
+
+    def test_vector_payloads_use_the_table_index_directory_by_default(self):
+        table = self._create_table('pk_vector_default')
+        reader = self._reader(PrimaryKeyVectorRead, table)
+
+        self.assertEqual(
+            os.path.join(self._table_root('pk_vector_default'), 'index'),
+            reader._index_base_path(self._split(table)))
+
+    def test_full_text_payloads_are_opened_in_the_bucket_directory(self):
+        table = self._create_table('pk_full_text_in_data_dir', **_IN_DATA_FILE_DIR)
+        reader = self._reader(PrimaryKeyFullTextRead, table)
+
+        self.assertEqual(self._bucket_dir('pk_full_text_in_data_dir'),
+                         reader._index_base_path(self._split(table)))
+
+    def test_full_text_payloads_use_the_table_index_directory_by_default(self):
+        table = self._create_table('pk_full_text_default')
+        reader = self._reader(PrimaryKeyFullTextRead, table)
+
+        self.assertEqual(
+            os.path.join(self._table_root('pk_full_text_default'), 'index'),
+            reader._index_base_path(self._split(table)))
+
+    def test_sorted_index_payloads_are_opened_in_the_bucket_directory(self):
+        table = self._create_table('pk_sorted_in_data_dir', **_IN_DATA_FILE_DIR)
+        captured = {}
+
+        def spy(index_type, file_io, index_path, field, io_metas, options=None):
+            captured['index_path'] = index_path
+            return [object()]
+
+        field = table.fields[0]
+        payload = SimpleNamespace(
+            file_name=_INDEX_FILE_NAME, file_size=1, external_path=None,
+            global_index_meta=SimpleNamespace(index_meta=None))
+        definition = SimpleNamespace(
+            field_id=field.id, index_type='PK_SORTED', options={})
+
+        original = primary_key_sorted_index_scan._create_inner_readers
+        primary_key_sorted_index_scan._create_inner_readers = spy
+        try:
+            create = primary_key_sorted_index_scan.reader_factory(table)
+            create(self._split(table, attr='source_split'), definition, [payload])
+        finally:
+            primary_key_sorted_index_scan._create_inner_readers = original
+
+        self.assertEqual(self._bucket_dir('pk_sorted_in_data_dir'),
+                         captured['index_path'])
+
+    def _payload(self):
+        return SimpleNamespace(
+            index_type='HNSW', file_name=_INDEX_FILE_NAME, file_size=1,
+            external_path=None,
+            global_index_meta=SimpleNamespace(index_meta=None))
+
+    def _capture_split_at_path_resolution(self, reader):
+        def capture(split=None):
+            raise _CapturedSplit(split)
+        reader._index_base_path = capture
+
+    def test_vector_read_hands_the_split_down_to_path_resolution(self):
+        # The bucket-scoped override is dead weight if _eval keeps the split to
+        # itself, and a dropped argument silently falls back to the global root.
+        table = self._create_table('pk_vector_handoff', **_IN_DATA_FILE_DIR)
+        reader = self._reader(PrimaryKeyVectorRead, table)
+        reader._vector_column = SimpleNamespace(name='value')
+        reader._options = {}
+        split = self._split(table)
+        self._capture_split_at_path_resolution(reader)
+
+        with self.assertRaises(_CapturedSplit) as caught:
+            reader._eval(0, 9, [self._payload()], [0.0], 4, None, split)
+
+        self.assertIs(split, caught.exception.split)
+
+    def test_full_text_read_hands_the_split_down_to_path_resolution(self):
+        table = self._create_table('pk_full_text_handoff', **_IN_DATA_FILE_DIR)
+        reader = self._reader(PrimaryKeyFullTextRead, table)
+        split = self._split(table)
+        self._capture_split_at_path_resolution(reader)
+
+        with self.assertRaises(_CapturedSplit) as caught:
+            reader._eval(0, 9, [self._payload()], None, split)
+
+        self.assertIs(split, caught.exception.split)
+
+    def _pk_plan(self, plan_cls, split_cls, table, row_count=4):
+        payload = IndexFileMeta(
+            index_type='HNSW', file_name=_INDEX_FILE_NAME, file_size=1,
+            row_count=row_count,
+            global_index_meta=GlobalIndexMeta(
+                row_range_start=0, row_range_end=row_count - 1, index_field_id=1,
+                source_meta=PrimaryKeyIndexSourceMeta(
+                    data_level=5,
+                    source_files=[PrimaryKeyIndexSourceFile(
+                        _DATA_FILE_NAME, row_count)],
+                ).serialize()))
+        data_split = SimpleNamespace(
+            partition=GenericRow(['20260831'], table.partition_keys_fields),
+            bucket=_BUCKET, files=[], data_deletion_files=None)
+        split = split_cls(data_split=data_split, payloads=(payload,),
+                          uncovered_data_files=(), row_ranges_by_file={})
+        return plan_cls(1, [split]), split
+
+    def test_vector_read_plan_hands_its_split_to_path_resolution(self):
+        # read_plan is where the split is known; a reader that keeps it to itself
+        # resolves against the global root and reports an empty index.
+        table = self._create_table('pk_vector_plan', **_IN_DATA_FILE_DIR)
+        reader = self._reader(PrimaryKeyVectorRead, table)
+        reader._vector_column = SimpleNamespace(name='value')
+        reader._options = {}
+        reader._limit = 4
+        reader._query_vector = [0.0]
+        plan, split = self._pk_plan(PrimaryKeyVectorScanPlan,
+                                    PrimaryKeyVectorSearchSplit, table)
+        self._capture_split_at_path_resolution(reader)
+
+        with self.assertRaises(_CapturedSplit) as caught:
+            reader.read_plan(plan)
+
+        self.assertIs(split, caught.exception.split)
+
+    def test_full_text_read_plan_hands_its_split_to_path_resolution(self):
+        table = self._create_table('pk_full_text_plan', **_IN_DATA_FILE_DIR)
+        reader = self._reader(PrimaryKeyFullTextRead, table)
+        plan, split = self._pk_plan(PrimaryKeyFullTextScanPlan,
+                                    PrimaryKeyFullTextSearchSplit, table)
+        self._capture_split_at_path_resolution(reader)
+
+        with self.assertRaises(_CapturedSplit) as caught:
+            reader.read_plan(plan)
+
+        self.assertIs(split, caught.exception.split)
+
+    def test_primary_key_readers_refuse_to_guess_without_a_split(self):
+        # A caller that forgets to hand the split down must fail loudly rather than
+        # read the global-index root and report an empty index.
+        for name, cls in (('pk_vector_no_split', PrimaryKeyVectorRead),
+                          ('pk_full_text_no_split', PrimaryKeyFullTextRead)):
+            with self.subTest(reader=cls.__name__):
+                table = self._create_table(name, **_IN_DATA_FILE_DIR)
+                reader = self._reader(cls, table)
+                with self.assertRaises(ValueError):
+                    reader._index_base_path(None)
+
+    def test_primary_key_readers_tolerate_a_missing_split_by_default(self):
+        for name, cls in (('pk_vector_no_split_default', PrimaryKeyVectorRead),
+                          ('pk_full_text_no_split_default', PrimaryKeyFullTextRead)):
+            with self.subTest(reader=cls.__name__):
+                table = self._create_table(name)
+                reader = self._reader(cls, table)
+                self.assertEqual(
+                    os.path.join(self._table_root(name), 'index'),
+                    reader._index_base_path(None))
+
+    def test_data_evolution_readers_stay_on_the_global_index_root(self):
+        # These read true global indexes, which the option does not move. Sharing
+        # the hook with the PK readers must not drag them into the bucket directory.
+        for name, cls in (('de_vector', DataEvolutionVectorRead),
+                          ('de_full_text', DataEvolutionFullTextRead)):
+            with self.subTest(reader=cls.__name__):
+                table = self._create_table(name, **_IN_DATA_FILE_DIR)
+                reader = self._reader(cls, table)
+                self.assertEqual(
+                    os.path.join(self._table_root(name), 'index'),
+                    reader._index_base_path(self._split(table)))
 
 
 class IndexFileAbortCleanupTest(IndexFileLayoutTestBase):
