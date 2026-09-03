@@ -149,6 +149,29 @@ class FileStorePathFactory:
             self.global_index_external_path is not None,
         )
 
+    def index_file_factory(self, partition: Tuple, bucket: int) -> 'IndexPathFactory':
+        """Locate the index files of one (partition, bucket).
+
+        Mirrors Java ``FileStorePathFactory.indexFileFactory``: with
+        ``index-file-in-data-file-dir`` an index file sits in the bucket directory,
+        next to the data files it describes, and follows those data files onto an
+        external path; otherwise every index file lives under the table-root
+        ``index`` directory. The option is immutable, so one table only ever uses
+        one layout -- but a reader that assumes the wrong one still plans
+        successfully and only fails when it opens the index file.
+        """
+        if not self.index_file_in_data_file_dir:
+            return self.global_index_path_factory()
+
+        bucket_path = self.bucket_path(partition, bucket)
+        external_path_provider = self.create_external_path_provider(partition, bucket)
+        return IndexPathFactory(
+            index_path=bucket_path,
+            global_index_root_path=bucket_path,
+            external_path=external_path_provider is not None,
+            external_path_provider=external_path_provider,
+        )
+
 
 class IndexPathFactory:
 
@@ -157,10 +180,12 @@ class IndexPathFactory:
         index_path: str,
         global_index_root_path: Optional[str] = None,
         external_path: bool = False,
+        external_path_provider: Optional[ExternalPathProvider] = None,
     ):
         self._index_path = index_path
         self._global_index_root_path = global_index_root_path or index_path
         self._external_path = external_path
+        self._external_path_provider = external_path_provider
         self._file_count = 0
 
     def index_path(self) -> str:
@@ -172,8 +197,24 @@ class IndexPathFactory:
         return self._global_index_root_path
 
     def to_path(self, file_name: str) -> str:
-        """Convert a file name to a full path."""
+        """Build the path a newly written index file should take."""
+        if self._external_path_provider is not None:
+            return self._external_path_provider.get_next_external_data_path(file_name)
         return f"{self._global_index_root_path}/{file_name}"
+
+    def to_path_from_meta(self, index_file) -> str:
+        """Locate an index file already described by an ``IndexFileMeta``.
+
+        Mirrors the ``toPath(IndexFileMeta)`` overload both Java index path
+        factories implement: an external path recorded at write time says where the
+        file actually landed, so it wins over whatever layout this factory would
+        compute. Without one the file is table-local, and the fallback is the read
+        path rather than the write root -- ``global-index.external-path`` can be
+        changed by ALTER TABLE long after the file was written.
+        """
+        if index_file.external_path:
+            return index_file.external_path
+        return f"{self._index_path}/{index_file.file_name}"
 
     def new_path(self, prefix: str = "index-") -> str:
         """Create a new unique index file path."""

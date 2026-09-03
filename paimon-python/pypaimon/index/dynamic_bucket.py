@@ -65,13 +65,13 @@ def is_my_bucket(bucket: int, num_assigners: int, assign_id: int) -> bool:
 
 
 def _iter_hashes(table, entry: IndexManifestEntry) -> Iterator[int]:
-    meta = entry.index_file
-    path = meta.external_path
-    if path is None:
-        # Files without an external path always live in the table's index
-        # directory, even if global-index.external-path was configured later.
-        index_path = table.path_factory().global_index_path_factory().index_path()
-        path = f"{index_path}/{meta.file_name}"
+    # The factory honours the external path recorded at write time, and falls back
+    # to the layout this table uses -- the bucket directory under
+    # index-file-in-data-file-dir, the table's index directory otherwise. Never the
+    # global-index root, which alter table can move after the file was written.
+    path = table.path_factory().index_file_factory(
+        tuple(entry.partition.values), entry.bucket
+    ).to_path_from_meta(entry.index_file)
     with table.file_io.new_input_stream(path) as stream:
         remainder = b""
         while True:
@@ -486,9 +486,9 @@ class DynamicBucketIndexMaintainer:
     def _write_index(
         self, partition: Tuple, bucket: int, hashes: Set[int]
     ) -> IndexManifestEntry:
-        path_factory = self.table.path_factory().global_index_path_factory()
-        self.table.file_io.check_or_mkdirs(path_factory.global_index_root_path())
+        path_factory = self.table.path_factory().index_file_factory(partition, bucket)
         path = path_factory.new_path()
+        self.table.file_io.check_or_mkdirs(path.rsplit("/", 1)[0])
         payload = b"".join(struct.pack(">i", value) for value in sorted(hashes))
         try:
             with self.table.file_io.new_output_stream(path) as stream:

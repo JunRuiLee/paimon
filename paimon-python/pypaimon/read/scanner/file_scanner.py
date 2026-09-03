@@ -245,6 +245,10 @@ class FileScanner:
         self.snapshot_manager = table.snapshot_manager()
         self.manifest_list_manager = ManifestListManager(table)
         self.manifest_file_manager = ManifestFileManager(table)
+        # Built on first use and reused across index entries: one scan resolves a
+        # path per (partition, bucket), and rebuilding the factory each time
+        # re-reads the table options and external paths for nothing.
+        self._path_factory = None
 
         self.primary_key_predicate = trim_and_transform_predicate(
             self.predicate, self.table.field_names, self.table.trimmed_primary_keys)
@@ -942,10 +946,7 @@ class FileScanner:
         if not index_file.dv_ranges:
             return deletion_files
 
-        # Build deletion file path
-        # Format: manifest/index-manifest-{uuid}
-        index_path = self.table.table_path.rstrip('/') + '/index'
-        dv_file_path = f"{index_path}/{index_file.file_name}"
+        dv_file_path = self._index_file_path(index_entry)
 
         # Convert each DeletionVectorMeta to DeletionFile
         for data_file_name, dv_meta in index_file.dv_ranges.items():
@@ -958,3 +959,17 @@ class FileScanner:
             deletion_files[data_file_name] = deletion_file
 
         return deletion_files
+
+    def _index_file_path(self, index_entry) -> str:
+        """Resolve the on-disk location of an index file.
+
+        Delegated to the path factory so an index file and the data files it
+        describes are located by the same rules -- notably
+        ``index-file-in-data-file-dir``, which moves the index into the bucket
+        directory and which a reader cannot guess from the manifest alone.
+        """
+        if self._path_factory is None:
+            self._path_factory = self.table.path_factory()
+        return self._path_factory.index_file_factory(
+            tuple(index_entry.partition.values), index_entry.bucket
+        ).to_path_from_meta(index_entry.index_file)

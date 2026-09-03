@@ -844,6 +844,13 @@ class CoreOptions:
         .with_description("Search mode for full-text index queries.")
     )
 
+    INDEX_FILE_IN_DATA_FILE_DIR: ConfigOption[bool] = (
+        ConfigOptions.key("index-file-in-data-file-dir")
+        .boolean_type()
+        .default_value(False)
+        .with_description("Whether index file in data file directory.")
+    )
+
     GLOBAL_INDEX_EXTERNAL_PATH: ConfigOption[str] = (
         ConfigOptions.key("global-index.external-path")
         .string_type()
@@ -1550,6 +1557,9 @@ class CoreOptions:
             return self.options.get(option)
         global_mode = self.global_index_search_mode()
         return global_mode if global_mode is not None else self.options.get(option)
+
+    def index_file_in_data_file_dir(self, default=None):
+        return self.options.get(CoreOptions.INDEX_FILE_IN_DATA_FILE_DIR, default)
 
     def global_index_external_path(self, default=None):
         value = self.options.get(CoreOptions.GLOBAL_INDEX_EXTERNAL_PATH, default)

@@ -75,12 +75,25 @@ def _abort_commit_messages(table, commit_messages: List[CommitMessage]):
             try:
                 index_file = entry.index_file
                 file_name = index_file.file_name
+                # Abort deletes what this process just wrote, so resolve each file
+                # the way the writer that produced it did, or the delete misses and
+                # the file is left behind. pypaimon has two producers: the
+                # global-index writer, which goes to the global-index root whatever
+                # the table's layout is and leaves source metadata unset, and every
+                # bucket-scoped index -- deletion vectors and HASH -- which follows
+                # the layout. Source metadata therefore marks a file this process did
+                # not write through the global-index writer; Java builds those through
+                # indexFileFactory(partition, bucket).
+                global_index_meta = index_file.global_index_meta
+                is_global_index = (global_index_meta is not None
+                                   and global_index_meta.source_meta is None)
+                path_factory = table.path_factory()
                 path = (
-                    index_file.external_path
-                    or table.path_factory()
-                    .global_index_path_factory()
-                    .to_path(file_name)
-                )
+                    path_factory.global_index_path_factory()
+                    if is_global_index
+                    else path_factory.index_file_factory(
+                        tuple(entry.partition.values), entry.bucket)
+                ).to_path_from_meta(index_file)
                 table.file_io.delete_quietly(path)
             except Exception as error:
                 logger.warning(
